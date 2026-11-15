@@ -33,7 +33,7 @@ spec:
     functionRef:
       name: function-aws-lookup
     input:
-      apiVersion: awslookup.fn.gideonmaree.dev/v1beta1
+      apiVersion: awslookup.fn.exxeon.io/v1beta1
       kind: Input
       onNotFound: Fail
     credentials:

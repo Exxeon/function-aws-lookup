@@ -6,7 +6,7 @@ import (
 
 	"github.com/crossplane/function-sdk-go"
 
-	"github.com/giepa/function-aws-lookup/internal/awsclient"
+	"github.com/Exxeon/function-aws-lookup/internal/awsclient"
 )
 
 // CLI of this Function.

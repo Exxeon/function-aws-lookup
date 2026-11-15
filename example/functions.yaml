@@ -15,4 +15,4 @@ metadata:
     render.crossplane.io/runtime: Development
 spec:
   # This is ignored when using the Development runtime.
-  package: ghcr.io/giepa/function-aws-lookup
+  package: ghcr.io/exxeon/function-aws-lookup

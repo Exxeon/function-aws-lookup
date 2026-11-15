@@ -13,9 +13,9 @@ import (
 	"github.com/crossplane/function-sdk-go/resource"
 	"github.com/crossplane/function-sdk-go/response"
 
-	"github.com/giepa/function-aws-lookup/input/v1beta1"
-	"github.com/giepa/function-aws-lookup/internal/awsclient"
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/input/v1beta1"
+	"github.com/Exxeon/function-aws-lookup/internal/awsclient"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 )
 
 // AnnotationExternalName is the Crossplane external name annotation.
@@ -67,7 +67,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 		return rsp, nil
 	}
 
-	r := &resolver{newFinder: f.newFinder, req: req, in: in, cache: map[string][]string{}}
+	r := &resolver{newFinder: f.newFinder, req: req, in: in, matches: map[string][]lookup.Resource{}, properties: map[string]string{}}
 
 	for _, name := range slices.Sorted(maps.Keys(desired)) {
 		dr := desired[name]
@@ -97,17 +97,22 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			return rsp, nil
 		}
 
-		names, err := r.resolve(ctx, region, q)
+		matches, err := r.find(ctx, region, q)
 		if err != nil {
 			response.Fatal(rsp, errors.Wrapf(err, "composed resource %q: cannot look up %s", name, uri))
 			return rsp, nil
 		}
 
-		switch len(names) {
+		switch len(matches) {
 		case 1:
-			log.Info("Adopting existing AWS resource", "region", region, "externalName", names[0])
-			response.Normalf(rsp, "Composed resource %q adopts existing AWS resource %q", name, names[0])
-			setExternalName(dr, names[0])
+			ext, err := r.externalName(ctx, region, q, matches[0])
+			if err != nil {
+				response.Fatal(rsp, errors.Wrapf(err, "composed resource %q: cannot get the external name of %s", name, matches[0].ARN))
+				return rsp, nil
+			}
+			log.Info("Adopting existing AWS resource", "region", region, "arn", matches[0].ARN, "externalName", ext)
+			response.Normalf(rsp, "Composed resource %q adopts existing AWS resource %q", name, ext)
+			setExternalName(dr, ext)
 		case 0:
 			if in.OnNotFound == v1beta1.NotFoundPolicyCreate {
 				log.Info("No AWS resource matches, creating a new one", "region", region)
@@ -118,9 +123,12 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			response.Fatal(rsp, errors.Errorf("composed resource %q: no AWS resource in %s matches %s", name, region, uri))
 			return rsp, nil
 		default:
-			listed := names[:min(len(names), maxListedMatches)]
+			listed := make([]string, 0, maxListedMatches)
+			for _, m := range matches[:min(len(matches), maxListedMatches)] {
+				listed = append(listed, m.ARN)
+			}
 			response.Fatal(rsp, errors.Errorf("composed resource %q: %d AWS resources in %s match %s, refine the tags so that exactly one matches: %s",
-				name, len(names), region, uri, strings.Join(listed, ", ")))
+				name, len(matches), region, uri, strings.Join(listed, ", ")))
 			return rsp, nil
 		}
 	}
@@ -133,58 +141,99 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	return rsp, nil
 }
 
-// resolver looks up external names. It creates the Finder on first use and
-// caches results, so a request without lookups never calls AWS.
+// resolver looks up resources and their external names. It creates the
+// Finder on first use and caches results, so a request without lookups never
+// calls AWS.
 type resolver struct {
 	newFinder FinderFactory
 	req       *fnv1.RunFunctionRequest
 	in        *v1beta1.Input
 
-	finder awsclient.Finder
-	cache  map[string][]string
+	finder     awsclient.Finder
+	matches    map[string][]lookup.Resource
+	properties map[string]string
 }
 
-func (r *resolver) resolve(ctx context.Context, region string, q lookup.Query) ([]string, error) {
-	key := region + " " + q.String()
-	if names, ok := r.cache[key]; ok {
-		return names, nil
+// find returns the resources in region that match q, sorted by ARN.
+func (r *resolver) find(ctx context.Context, region string, q lookup.Query) ([]lookup.Resource, error) {
+	tagsOnly := q
+	tagsOnly.Field = ""
+	key := region + " " + tagsOnly.String()
+	if m, ok := r.matches[key]; ok {
+		return m, nil
 	}
 
-	if r.finder == nil {
-		o := awsclient.Options{AssumeRoleARN: r.in.AssumeRoleARN, Region: region}
-		if _, ok := r.req.GetCredentials()[r.in.CredentialsName]; ok {
-			c, err := request.GetCredentials(r.req, r.in.CredentialsName)
-			if err != nil {
-				return nil, err
-			}
-			o.Credentials = c.Data
-		}
-		f, err := r.newFinder(ctx, o)
-		if err != nil {
-			return nil, err
-		}
-		r.finder = f
-	}
-
-	arns, err := r.finder.Find(ctx, region, q)
+	f, err := r.getFinder(ctx, region)
 	if err != nil {
 		return nil, err
 	}
 
-	var names []string
+	arns, err := f.Find(ctx, region, q)
+	if err != nil {
+		return nil, err
+	}
+
+	var matches []lookup.Resource
 	for _, a := range arns {
-		n, ok, err := q.Type.ExternalName(a)
+		res, ok, err := q.Type.Resource(a)
 		if err != nil {
 			return nil, err
 		}
-		if ok && !slices.Contains(names, n) {
-			names = append(names, n)
+		if ok && !slices.Contains(matches, res) {
+			matches = append(matches, res)
 		}
 	}
-	slices.Sort(names)
+	slices.SortFunc(matches, func(a, b lookup.Resource) int { return strings.Compare(a.ARN, b.ARN) })
 
-	r.cache[key] = names
-	return names, nil
+	r.matches[key] = matches
+	return matches, nil
+}
+
+// externalName returns the external name of res. It reads a Cloud Control
+// property if the query or the resource type asks for one.
+func (r *resolver) externalName(ctx context.Context, region string, q lookup.Query, res lookup.Resource) (string, error) {
+	field := q.ExternalNameField()
+	if field == "" {
+		return q.Type.ExternalName(res), nil
+	}
+
+	key := region + " " + res.ARN
+	props, ok := r.properties[key]
+	if !ok {
+		f, err := r.getFinder(ctx, region)
+		if err != nil {
+			return "", err
+		}
+		props, err = f.Properties(ctx, region, q.Type.CloudFormationType, q.Type.CloudControlIdentifier(res))
+		if err != nil {
+			return "", err
+		}
+		r.properties[key] = props
+	}
+
+	return lookup.Field(props, field)
+}
+
+func (r *resolver) getFinder(ctx context.Context, region string) (awsclient.Finder, error) {
+	if r.finder != nil {
+		return r.finder, nil
+	}
+
+	o := awsclient.Options{AssumeRoleARN: r.in.AssumeRoleARN, Region: region}
+	if _, ok := r.req.GetCredentials()[r.in.CredentialsName]; ok {
+		c, err := request.GetCredentials(r.req, r.in.CredentialsName)
+		if err != nil {
+			return nil, err
+		}
+		o.Credentials = c.Data
+	}
+
+	f, err := r.newFinder(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	r.finder = f
+	return f, nil
 }
 
 func observedExternalName(observed map[resource.Name]resource.ObservedComposed, name resource.Name) string {
