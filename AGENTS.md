@@ -15,7 +15,8 @@ Public repository: https://github.com/Exxeon/function-aws-lookup. Go module:
 | `main.go` | CLI and gRPC server. Wires `awsclient.NewFinder` into the Function. |
 | `fn.go` | `RunFunction`: walks desired resources, resolves URIs, writes results. |
 | `input/v1beta1/` | Function input type. `zz_generated.deepcopy.go` is generated. |
-| `internal/lookup/` | URI parsing (`uri.go`), supported resource types (`types.go`), Cloud Control field extraction (`field.go`). No AWS calls. |
+| `internal/lookup/` | URI parsing (`uri.go`), ARN parsing (`arn.go`), ARN-to-CloudFormation lookup (`cloudformation.go`), Cloud Control field extraction (`field.go`). No AWS calls. |
+| `internal/lookup/gen/` | Generator for `internal/lookup/zz_generated_cloudformation.go`. |
 | `internal/awsclient/` | AWS SDK code: Tagging API search, Cloud Control `GetResource`, credentials. |
 | `package/` | Crossplane package metadata and the generated input CRD. |
 | `example/` | Manifests for `crossplane render`. |
@@ -31,25 +32,27 @@ Keep these when changing `fn.go`:
   desired resource and don't call AWS. Adoption happens once; an external name never changes
   afterwards.
 - Don't create AWS clients or call AWS for requests that have no URIs to resolve.
-- Make at most one Tagging API call per region and query, and one Cloud Control call per
-  resource, in a request.
+- Make at most one Tagging API call per region and query in a request, and read each resource
+  with Cloud Control at most once.
+- Don't add per-type rules. The URI names the service and type as they appear in the ARN, and the
+  external name is the ARN's ID unless the URI names a field. The only per-type data is the
+  generated ARN-to-CloudFormation table.
 
-## Add a resource type
+## The CloudFormation table
 
-Each entry in `internal/lookup/types.go` must be checked against two sources. Don't guess.
+`internal/lookup/zz_generated_cloudformation.go` maps the ARN formats of taggable resources to
+CloudFormation types, so that `#field` lookups know which type to read with Cloud Control. Never
+edit it by hand. Regenerate it when AWS adds services:
 
-1. The external name in provider-upjet-aws,
-   [`config/externalname.go`](https://github.com/crossplane-contrib/provider-upjet-aws/blob/main/config/externalname.go).
-   `IdentifierFromProvider` means the Terraform ID, which may not be in the ARN; check the
-   Terraform resource's import docs. If the external name isn't the ARN or a part of it, set
-   `DefaultField` to the Cloud Control property that holds it (see `rds/instance`).
-2. The CloudFormation schema: `primaryIdentifier` decides `CloudControlUsesARN`, and the type
-   needs a `read` handler. Get the schemas with
-   `aws cloudformation describe-type --type RESOURCE --type-name AWS::...` or from
-   `https://schema.cloudformation.<region>.amazonaws.com/CloudformationSchema.zip`.
+```sh
+cd internal/lookup && go run ./gen
+```
 
-Then add entries to the tables in `internal/lookup/types_test.go` and the supported types table in
-`README.md`.
+The generator downloads AWS's CloudFormation resource schemas and the Service Authorization
+Reference, and matches each taggable CloudFormation type to the IAM resource type its handlers act
+on. If a mapping is wrong, fix the matching rules in `gen/main.go`, not the output, and add the
+ARN to the table in `cloudformation_test.go`. Check the diff of the generated file before
+committing it.
 
 ## Tests
 
@@ -64,7 +67,7 @@ Then add entries to the tables in `internal/lookup/types_test.go` and the suppor
 go test ./...                      # unit tests
 golangci-lint fmt ./...            # format (gci, gofumpt)
 golangci-lint run                  # lint; CI runs the same config
-go generate ./...                  # after changing input/v1beta1: regenerates deepcopy and package/input/
+go generate ./...                  # regenerates deepcopy, package/input/ and the CloudFormation table (needs internet)
 go mod tidy                        # CI fails if go.mod or go.sum change
 
 go run . --insecure --debug        # run locally, then in example/:
