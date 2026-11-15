@@ -1,0 +1,44 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xstorage
+spec:
+  compositeTypeRef:
+    apiVersion: example.crossplane.io/v1
+    kind: XStorage
+  mode: Pipeline
+  pipeline:
+  # Compose a bucket whose external name is an aws-lookup URI built from the
+  # organisation's tagging convention.
+  - step: compose-bucket
+    functionRef:
+      name: function-go-templating
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |
+          apiVersion: s3.aws.m.upbound.io/v1beta1
+          kind: Bucket
+          metadata:
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: bucket
+              crossplane.io/external-name: aws-lookup://s3/bucket?team={{ .observed.composite.resource.spec.team }}&environment={{ .observed.composite.resource.spec.environment }}
+          spec:
+            forProvider:
+              region: eu-west-1
+  # Replace the URI with the name of the existing bucket.
+  - step: adopt-existing-resources
+    functionRef:
+      name: function-aws-lookup
+    input:
+      apiVersion: awslookup.fn.gideonmaree.dev/v1beta1
+      kind: Input
+      onNotFound: Fail
+    credentials:
+    - name: aws-creds
+      source: Secret
+      secretRef:
+        namespace: crossplane-system
+        name: aws-creds

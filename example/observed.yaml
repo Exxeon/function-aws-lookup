@@ -1,0 +1,13 @@
+# A bucket that was already adopted. The Function keeps its external name and
+# does not call AWS.
+apiVersion: s3.aws.m.upbound.io/v1beta1
+kind: Bucket
+metadata:
+  name: payments-abc12
+  namespace: default
+  annotations:
+    crossplane.io/composition-resource-name: bucket
+    crossplane.io/external-name: payments-prod-legacy
+spec:
+  forProvider:
+    region: eu-west-1

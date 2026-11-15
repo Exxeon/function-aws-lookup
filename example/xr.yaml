@@ -1,0 +1,8 @@
+apiVersion: example.crossplane.io/v1
+kind: XStorage
+metadata:
+  name: payments
+  namespace: default
+spec:
+  team: payments
+  environment: prod
