@@ -20,15 +20,28 @@ type findCall struct {
 	query  string
 }
 
+type propertiesCall struct {
+	region, typeName, identifier string
+}
+
 type fakeFinder struct {
 	arns  []string
 	err   error
 	calls []findCall
+
+	properties     string
+	propertiesErr  error
+	propertiesCall []propertiesCall
 }
 
 func (f *fakeFinder) Find(_ context.Context, region string, q lookup.Query) ([]string, error) {
 	f.calls = append(f.calls, findCall{region: region, query: q.String()})
 	return f.arns, f.err
+}
+
+func (f *fakeFinder) Properties(_ context.Context, region, typeName, identifier string) (string, error) {
+	f.propertiesCall = append(f.propertiesCall, propertiesCall{region: region, typeName: typeName, identifier: identifier})
+	return f.properties, f.propertiesErr
 }
 
 const bucketURI = "aws-lookup://s3/bucket?tag1=mytag&tag2=othervalue"
@@ -102,6 +115,61 @@ var _ = Describe("RunFunction", func() {
 		Expect(fatal(rsp)).To(BeEmpty())
 		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket"))
 		Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
+		Expect(finder.propertiesCall).To(BeEmpty())
+	})
+
+	It("reads the field in the fragment with Cloud Control", func() {
+		req.Desired.Resources["bucket"] = bucket(bucketURI + "#DomainName")
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket.s3.amazonaws.com"))
+		Expect(finder.propertiesCall).To(Equal([]propertiesCall{{region: "eu-west-1", typeName: "AWS::S3::Bucket", identifier: "legacy-bucket"}}))
+	})
+
+	It("reads the DBI resource ID of an RDS instance without a fragment", func() {
+		req.Desired = &fnv1.State{Resources: map[string]*fnv1.Resource{"db": {Resource: resource.MustStructJSON(`{
+			"apiVersion": "rds.aws.m.upbound.io/v1beta1",
+			"kind": "Instance",
+			"metadata": {"annotations": {"crossplane.io/external-name": "aws-lookup://rds/instance?team=payments"}},
+			"spec": {"forProvider": {"region": "eu-west-1"}}
+		}`)}}}
+		finder.arns = []string{"arn:aws:rds:eu-west-1:123456789012:db:orders"}
+		finder.properties = `{"DBInstanceIdentifier": "orders", "DbiResourceId": "db-ABC123"}`
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "db")).To(Equal("db-ABC123"))
+		Expect(finder.propertiesCall).To(Equal([]propertiesCall{{region: "eu-west-1", typeName: "AWS::RDS::DBInstance", identifier: "orders"}}))
+	})
+
+	It("uses the ARN as the Cloud Control identifier when the type needs it", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://sns/topic?team=payments#TopicName")
+		finder.arns = []string{"arn:aws:sns:eu-west-1:123456789012:alerts"}
+		finder.properties = `{"TopicArn": "arn:aws:sns:eu-west-1:123456789012:alerts", "TopicName": "alerts"}`
+
+		Expect(externalName(run(), "bucket")).To(Equal("alerts"))
+		Expect(finder.propertiesCall[0].identifier).To(Equal("arn:aws:sns:eu-west-1:123456789012:alerts"))
+	})
+
+	It("fails and lists the available properties when the field is missing", func() {
+		req.Desired.Resources["bucket"] = bucket(bucketURI + "#Nope")
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+
+		Expect(fatal(run())).To(ContainSubstring("available properties are BucketName, DomainName"))
+	})
+
+	It("fails when Cloud Control fails", func() {
+		req.Desired.Resources["bucket"] = bucket(bucketURI + "#DomainName")
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+		finder.propertiesErr = errors.New("not authorized to perform s3:GetBucketTagging")
+
+		Expect(fatal(run())).To(ContainSubstring("s3:GetBucketTagging"))
 	})
 
 	It("keeps the observed external name without calling AWS", func() {
@@ -133,7 +201,7 @@ var _ = Describe("RunFunction", func() {
 	It("fails when several resources match", func() {
 		finder.arns = []string{"arn:aws:s3:::a", "arn:aws:s3:::b"}
 
-		Expect(fatal(run())).To(ContainSubstring("2 AWS resources in eu-west-1 match"))
+		Expect(fatal(run())).To(ContainSubstring("2 AWS resources in eu-west-1 match " + bucketURI + ", refine the tags so that exactly one matches: arn:aws:s3:::a, arn:aws:s3:::b"))
 	})
 
 	It("ignores matches of other kinds of resources", func() {
@@ -231,5 +299,19 @@ var _ = Describe("RunFunction", func() {
 
 		Expect(finder.calls).To(HaveLen(1))
 		Expect(externalName(rsp, "other")).To(Equal("legacy-bucket"))
+	})
+
+	It("reads the properties of a resource once per request", func() {
+		req.Desired.Resources["bucket"] = bucket(bucketURI + "#BucketName")
+		req.Desired.Resources["other"] = bucket(bucketURI + "#DomainName")
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+
+		rsp := run()
+
+		Expect(finder.calls).To(HaveLen(1))
+		Expect(finder.propertiesCall).To(HaveLen(1))
+		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket"))
+		Expect(externalName(rsp, "other")).To(Equal("legacy-bucket.s3.amazonaws.com"))
 	})
 })

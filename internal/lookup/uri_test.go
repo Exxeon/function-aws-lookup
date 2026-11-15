@@ -34,6 +34,27 @@ var _ = Describe("Parse", func() {
 		Expect(q.Tags).To(Equal(map[string][]string{"aws:cloudformation:stack-name": {"my stack"}}))
 	})
 
+	It("parses the field from the fragment", func() {
+		q, err := lookup.Parse("aws-lookup://rds/instance?team=payments#Endpoint/Address")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(q.Tags).To(Equal(map[string][]string{"team": {"payments"}}))
+		Expect(q.Field).To(Equal("Endpoint/Address"))
+		Expect(q.ExternalNameField()).To(Equal("Endpoint/Address"))
+	})
+
+	It("uses the default field of the type when there is no fragment", func() {
+		q, err := lookup.Parse("aws-lookup://rds/instance?team=payments")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(q.Field).To(BeEmpty())
+		Expect(q.ExternalNameField()).To(Equal("DbiResourceId"))
+	})
+
+	It("needs no field for types whose external name is in the ARN", func() {
+		q, err := lookup.Parse("aws-lookup://s3/bucket?team=payments")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(q.ExternalNameField()).To(BeEmpty())
+	})
+
 	DescribeTable("rejects invalid URIs",
 		func(uri, msg string) {
 			_, err := lookup.Parse(uri)
@@ -44,6 +65,8 @@ var _ = Describe("Parse", func() {
 		Entry("unsupported type", "aws-lookup://s3/object?a=b", "unsupported resource type s3/object"),
 		Entry("no tags", "aws-lookup://s3/bucket", "at least one tag"),
 		Entry("empty tag key", "aws-lookup://s3/bucket?=b", "tag keys must not be empty"),
+		Entry("fragment before the query", "aws-lookup://s3/bucket#BucketName?a=b", "at least one tag"),
+		Entry("empty field segment", "aws-lookup://s3/bucket?a=b#Endpoint//Address", "empty path segments"),
 	)
 })
 
@@ -55,6 +78,12 @@ var _ = Describe("Query.String", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(a.String()).To(Equal("aws-lookup://s3/bucket?a=1&b=2&c="))
 		Expect(a.String()).To(Equal(b.String()))
+	})
+
+	It("keeps the field", func() {
+		q, err := lookup.Parse("aws-lookup://rds/instance?a=1#DbiResourceId")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(q.String()).To(Equal("aws-lookup://rds/instance?a=1#DbiResourceId"))
 	})
 })
 

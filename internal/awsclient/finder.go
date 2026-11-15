@@ -1,5 +1,5 @@
 // Package awsclient finds AWS resources by tag with the Resource Groups
-// Tagging API.
+// Tagging API, and reads their properties with the Cloud Control API.
 package awsclient
 
 import (
@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
+	"github.com/aws/aws-sdk-go-v2/service/cloudcontrol"
 	rgt "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 	rgttypes "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -22,9 +23,13 @@ import (
 // defaultRegion is used for STS when no other region is known.
 const defaultRegion = "us-east-1"
 
-// A Finder returns the ARNs of the resources that match a query.
+// A Finder finds AWS resources and reads their properties.
 type Finder interface {
+	// Find returns the ARNs of the resources that match a query.
 	Find(ctx context.Context, region string, q lookup.Query) ([]string, error)
+
+	// Properties returns the Cloud Control properties of a resource as JSON.
+	Properties(ctx context.Context, region, typeName, identifier string) (string, error)
 }
 
 // Options configure a Finder.
@@ -40,12 +45,14 @@ type Options struct {
 	Region string
 }
 
-// TaggingFinder is a Finder backed by the Resource Groups Tagging API.
-type TaggingFinder struct {
+// AWSFinder is a Finder backed by the Resource Groups Tagging API and the
+// Cloud Control API.
+type AWSFinder struct {
 	cfg aws.Config
 
-	mu      sync.Mutex
-	clients map[string]*rgt.Client
+	mu            sync.Mutex
+	tagging       map[string]*rgt.Client
+	cloudControls map[string]*cloudcontrol.Client
 }
 
 // NewFinder returns a Finder that uses the supplied options.
@@ -74,18 +81,18 @@ func NewFinder(ctx context.Context, o Options) (Finder, error) {
 		cfg.Credentials = aws.NewCredentialsCache(stscreds.NewAssumeRoleProvider(sts.NewFromConfig(cfg), o.AssumeRoleARN))
 	}
 
-	return &TaggingFinder{cfg: cfg, clients: map[string]*rgt.Client{}}, nil
+	return &AWSFinder{cfg: cfg, tagging: map[string]*rgt.Client{}, cloudControls: map[string]*cloudcontrol.Client{}}, nil
 }
 
 // Find returns the ARNs of the resources in region that match q.
-func (f *TaggingFinder) Find(ctx context.Context, region string, q lookup.Query) ([]string, error) {
+func (f *AWSFinder) Find(ctx context.Context, region string, q lookup.Query) ([]string, error) {
 	in := &rgt.GetResourcesInput{
 		ResourceTypeFilters: []string{q.Type.Filter},
 		TagFilters:          TagFilters(q.Tags),
 	}
 
 	var arns []string
-	p := rgt.NewGetResourcesPaginator(f.client(region), in)
+	p := rgt.NewGetResourcesPaginator(f.taggingClient(region), in)
 	for p.HasMorePages() {
 		out, err := p.NextPage(ctx)
 		if err != nil {
@@ -98,15 +105,42 @@ func (f *TaggingFinder) Find(ctx context.Context, region string, q lookup.Query)
 	return arns, nil
 }
 
-func (f *TaggingFinder) client(region string) *rgt.Client {
+// Properties returns the Cloud Control properties of a resource as JSON.
+func (f *AWSFinder) Properties(ctx context.Context, region, typeName, identifier string) (string, error) {
+	out, err := f.cloudControlClient(region).GetResource(ctx, &cloudcontrol.GetResourceInput{
+		TypeName:   aws.String(typeName),
+		Identifier: aws.String(identifier),
+	})
+	if err != nil {
+		return "", fmt.Errorf("cannot get %s %s from the Cloud Control API in %s: %w", typeName, identifier, region, err)
+	}
+	if out.ResourceDescription == nil || out.ResourceDescription.Properties == nil {
+		return "", fmt.Errorf("the Cloud Control API returned no properties for %s %s", typeName, identifier)
+	}
+	return aws.ToString(out.ResourceDescription.Properties), nil
+}
+
+func (f *AWSFinder) taggingClient(region string) *rgt.Client {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if c, ok := f.clients[region]; ok {
+	if c, ok := f.tagging[region]; ok {
 		return c
 	}
 	c := rgt.NewFromConfig(f.cfg, func(o *rgt.Options) { o.Region = region })
-	f.clients[region] = c
+	f.tagging[region] = c
+	return c
+}
+
+func (f *AWSFinder) cloudControlClient(region string) *cloudcontrol.Client {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if c, ok := f.cloudControls[region]; ok {
+		return c
+	}
+	c := cloudcontrol.NewFromConfig(f.cfg, func(o *cloudcontrol.Options) { o.Region = region })
+	f.cloudControls[region] = c
 	return c
 }
 

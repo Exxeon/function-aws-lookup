@@ -44,7 +44,9 @@ For every desired composed resource whose external name starts with
 2. Otherwise it searches the resource's region with the
    [Resource Groups Tagging API][tagging-api].
 3. If exactly one resource matches, it writes that resource's external name to
-   the annotation.
+   the annotation. If the URI names a field, or the type needs one, it first
+   reads the resource with the [Cloud Control API][cloud-control] and takes
+   the external name from that field.
 4. If several resources match, it stops the pipeline with a fatal result that
    lists them. Refine the tags so that only one matches.
 5. If nothing matches, it stops the pipeline (`onNotFound: Fail`, the default)
@@ -59,45 +61,81 @@ Put the function after the steps that compose your resources.
 ## URI format
 
 ```
-aws-lookup://<service>/<type>?<tag>=<value>&<tag>=<value>
+aws-lookup://<service>/<type>?<tag>=<value>&<tag>=<value>[#<field>]
 ```
 
 - All tags must match.
 - Repeat a tag to accept several values: `env=prod&env=production`.
 - Leave the value out to match any value: `legacy` or `legacy=`.
 - URL-encode special characters: `aws%3Acloudformation%3Astack-name=orders`.
+- The optional `#<field>` goes at the end, after the tags. See
+  [Choose the field](#choose-the-field).
 
 Supported types, with the external names that
 [provider-upjet-aws][provider-aws] expects:
 
-| URI | External name |
-| --- | --- |
-| `dynamodb/table` | table name |
-| `ec2/instance` | instance ID |
-| `ec2/internet-gateway` | internet gateway ID |
-| `ec2/nat-gateway` | NAT gateway ID |
-| `ec2/route-table` | route table ID |
-| `ec2/security-group` | security group ID |
-| `ec2/subnet` | subnet ID |
-| `ec2/vpc` | VPC ID |
-| `ecr/repository` | repository name |
-| `efs/file-system` | file system ID |
-| `eks/cluster` | cluster name |
-| `elasticache/replication-group` | replication group ID |
-| `elb/load-balancer` | ARN (application, network and gateway load balancers) |
-| `elb/target-group` | ARN |
-| `kms/key` | key ID |
-| `lambda/function` | function name |
-| `logs/log-group` | log group name |
-| `rds/cluster` | cluster identifier |
-| `s3/bucket` | bucket name |
-| `secretsmanager/secret` | ARN |
-| `sns/topic` | topic name |
+| URI | External name without a field | CloudFormation type |
+| --- | --- | --- |
+| `dynamodb/table` | table name | `AWS::DynamoDB::Table` |
+| `ec2/instance` | instance ID | `AWS::EC2::Instance` |
+| `ec2/internet-gateway` | internet gateway ID | `AWS::EC2::InternetGateway` |
+| `ec2/nat-gateway` | NAT gateway ID | `AWS::EC2::NatGateway` |
+| `ec2/route-table` | route table ID | `AWS::EC2::RouteTable` |
+| `ec2/security-group` | security group ID | `AWS::EC2::SecurityGroup` |
+| `ec2/subnet` | subnet ID | `AWS::EC2::Subnet` |
+| `ec2/vpc` | VPC ID | `AWS::EC2::VPC` |
+| `ecr/repository` | repository name | `AWS::ECR::Repository` |
+| `efs/file-system` | file system ID | `AWS::EFS::FileSystem` |
+| `eks/cluster` | cluster name | `AWS::EKS::Cluster` |
+| `elasticache/replication-group` | replication group ID | `AWS::ElastiCache::ReplicationGroup` |
+| `elb/load-balancer` | ARN (application, network and gateway load balancers) | `AWS::ElasticLoadBalancingV2::LoadBalancer` |
+| `elb/target-group` | ARN | `AWS::ElasticLoadBalancingV2::TargetGroup` |
+| `kms/key` | key ID | `AWS::KMS::Key` |
+| `lambda/function` | function name | `AWS::Lambda::Function` |
+| `logs/log-group` | log group name | `AWS::Logs::LogGroup` |
+| `rds/cluster` | cluster identifier | `AWS::RDS::DBCluster` |
+| `rds/instance` | `DbiResourceId` field, read with Cloud Control | `AWS::RDS::DBInstance` |
+| `s3/bucket` | bucket name | `AWS::S3::Bucket` |
+| `secretsmanager/secret` | ARN | `AWS::SecretsManager::Secret` |
+| `sns/topic` | topic name | `AWS::SNS::Topic` |
+
+For most types the external name is part of the ARN, so the function needs
+only the Tagging API. RDS instances are the exception: since Terraform AWS
+provider v5 their external name is the DBI resource ID (`db-ABC123...`), which
+is not in the ARN, so the function always reads it with Cloud Control.
 
 To add a type, check its external name configuration in
-[provider-upjet-aws][provider-aws-externalname] and add it to
-`internal/lookup/types.go`. Types that the Tagging API doesn't support, such as
-IAM roles, can't be looked up.
+[provider-upjet-aws][provider-aws-externalname], and the primary identifier of
+its CloudFormation type, then add it to `internal/lookup/types.go`. Types that
+the Tagging API doesn't support, such as IAM roles, can't be looked up.
+
+## Choose the field
+
+The field that a provider uses as the external name differs per type, and can
+change between provider versions. When the default is wrong, name the field
+yourself:
+
+```
+aws-lookup://rds/instance?team=payments&env=prod#DbiResourceId
+aws-lookup://rds/instance?team=payments&env=prod#Endpoint/Address
+aws-lookup://sns/topic?team=payments#TopicArn
+```
+
+The function then makes a second call, Cloud Control `GetResource`, for the
+matching resource and uses the value of that field.
+
+- Fields are CloudFormation property names, as listed in the
+  [CloudFormation resource reference][cfn-reference]: `DbiResourceId`, not
+  `resource_id` or `resourceId`.
+- Separate nested fields with `/`, and use a number for a list item:
+  `Endpoint/Address`, `Tags/0/Value`. Escape a `/` in a property name as `~1`
+  and a `~` as `~0`, as in JSON Pointer.
+- The value must be a non-empty string or a number.
+- If the field doesn't exist, the pipeline stops and the error lists the
+  fields that do.
+- The `#` must come after the tags. In `aws-lookup://s3/bucket#Field?a=b` the
+  tags are part of the fragment, and the function rejects the URI because it
+  has no tags.
 
 ## Input
 
@@ -145,8 +183,19 @@ can have either:
 Without step credentials the function uses the default AWS credential chain,
 so EKS Pod Identity or IRSA work through a `DeploymentRuntimeConfig`.
 
-The identity needs `tag:GetResources`, plus `sts:AssumeRole` on the role if you
-set `assumeRoleARN`.
+The identity needs:
+
+- `tag:GetResources` for every lookup;
+- `sts:AssumeRole` on the role, if you set `assumeRoleARN`;
+- for lookups that read a field (`#<field>` and `rds/instance`):
+  `cloudformation:GetResource`, plus the permissions of the CloudFormation
+  read handler of the type. The handler runs with the function's identity.
+  Some handlers need more than you might expect: `AWS::RDS::DBInstance` needs
+  `rds:DescribeDBInstances` and several `ec2:Describe*` permissions, and
+  `AWS::S3::Bucket` needs about twenty `s3:Get*` permissions. The schema of
+  each type lists them under `handlers.read.permissions`
+  (`aws cloudformation describe-type --type RESOURCE --type-name AWS::S3::Bucket`).
+  The AWS managed policy `ReadOnlyAccess` covers them.
 
 ## Adopt safely
 
@@ -182,5 +231,7 @@ To try the function with `crossplane render`, see [example](example/).
 
 [functions]: https://docs.crossplane.io/latest/composition/compositions/
 [tagging-api]: https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html
+[cloud-control]: https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/API_GetResource.html
+[cfn-reference]: https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-template-resource-type-ref.html
 [provider-aws]: https://github.com/crossplane-contrib/provider-upjet-aws
 [provider-aws-externalname]: https://github.com/crossplane-contrib/provider-upjet-aws/blob/main/config/externalname.go

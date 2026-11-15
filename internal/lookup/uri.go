@@ -13,7 +13,7 @@ import (
 const Scheme = "aws-lookup"
 
 // Query is a parsed aws-lookup URI, for example
-// aws-lookup://s3/bucket?team=payments&env=prod.
+// aws-lookup://rds/instance?team=payments&env=prod#DbiResourceId.
 type Query struct {
 	// Type of the AWS resource to find.
 	Type ResourceType
@@ -21,6 +21,10 @@ type Query struct {
 	// Tags the resource must have. A tag with several values matches any of
 	// them. A tag with no values matches any value.
 	Tags map[string][]string
+
+	// Field is an optional Cloud Control property to use as the external
+	// name, for example DbiResourceId or Endpoint/Address.
+	Field string
 }
 
 // IsURI reports whether s looks like an aws-lookup URI.
@@ -41,7 +45,7 @@ func Parse(s string) (Query, error) {
 	service := u.Host
 	kind := strings.Trim(u.Path, "/")
 	if service == "" || kind == "" {
-		return Query{}, fmt.Errorf("%q: must have the form %s://<service>/<type>?<tag>=<value>", s, Scheme)
+		return Query{}, fmt.Errorf("%q: must have the form %s://<service>/<type>?<tag>=<value>[#<field>]", s, Scheme)
 	}
 
 	t, ok := Lookup(service, kind)
@@ -70,7 +74,22 @@ func Parse(s string) (Query, error) {
 		}
 	}
 
-	return Query{Type: t, Tags: tags}, nil
+	if u.Fragment != "" {
+		if _, err := fieldPath(u.Fragment); err != nil {
+			return Query{}, fmt.Errorf("%q: %w", s, err)
+		}
+	}
+
+	return Query{Type: t, Tags: tags, Field: u.Fragment}, nil
+}
+
+// ExternalNameField returns the Cloud Control property that holds the
+// external name, or an empty string if no Cloud Control call is needed.
+func (q Query) ExternalNameField() string {
+	if q.Field != "" {
+		return q.Field
+	}
+	return q.Type.DefaultField
 }
 
 // String returns the query as a canonical aws-lookup URI, with sorted tags.
@@ -92,5 +111,9 @@ func (q Query) String() string {
 		}
 	}
 
-	return fmt.Sprintf("%s://%s/%s?%s", Scheme, q.Type.Service, q.Type.Name, strings.Join(params, "&"))
+	s := fmt.Sprintf("%s://%s/%s?%s", Scheme, q.Type.Service, q.Type.Name, strings.Join(params, "&"))
+	if q.Field != "" {
+		s += "#" + q.Field
+	}
+	return s
 }
