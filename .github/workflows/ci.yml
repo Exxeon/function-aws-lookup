@@ -27,6 +27,9 @@ env:
   # The package version to push. The default is 0.0.0-gitsha.
   XPKG_VERSION: ${{ inputs.version }}
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-26.04
@@ -123,6 +126,9 @@ jobs:
   push:
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      packages: write
     needs:
       - build
     steps:
