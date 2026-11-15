@@ -13,9 +13,9 @@ import (
 	"github.com/crossplane/function-sdk-go/resource"
 	"github.com/crossplane/function-sdk-go/response"
 
-	"github.com/giepa/function-aws-lookup/input/v1beta1"
-	"github.com/giepa/function-aws-lookup/internal/awsclient"
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/input/v1beta1"
+	"github.com/Exxeon/function-aws-lookup/internal/awsclient"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 )
 
 // AnnotationExternalName is the Crossplane external name annotation.

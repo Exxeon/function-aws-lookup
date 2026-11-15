@@ -17,7 +17,7 @@ import (
 	rgttypes "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 )
 
 // defaultRegion is used for STS when no other region is known.

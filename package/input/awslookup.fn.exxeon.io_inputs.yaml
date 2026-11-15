@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.23.0
-  name: inputs.awslookup.fn.gideonmaree.dev
+  name: inputs.awslookup.fn.exxeon.io
 spec:
-  group: awslookup.fn.gideonmaree.dev
+  group: awslookup.fn.exxeon.io
   names:
     categories:
     - crossplane

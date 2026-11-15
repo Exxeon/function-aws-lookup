@@ -1,30 +1,10 @@
-<!--
-Thank you for helping to improve Crossplane!
+### What does this change?
 
-Please read through https://git.io/fj2m9 if this is your first time opening a
-Crossplane pull request. Find us in https://slack.crossplane.io/messages/dev if
-you need any help contributing.
--->
+<!-- Describe the change and why it is needed. Link the issue it fixes, for example "Fixes #12". -->
 
-### Description of your changes
+### How is it tested?
 
-<!--
-Briefly describe what this pull request does, and how it is covered by tests.
-Be proactive - direct your reviewers' attention to anything that needs special
-consideration.
+<!-- Unit tests, crossplane render, or a run against a real AWS account. -->
 
-You MUST either [x] check or ~strikethrough~ every item in the checklist below.
-
-We love pull requests that fix an open issue. If yours does, use the below line
-to indicate which issue it fixes, for example "Fixes #500".
--->
-
-Fixes # 
-
-I have:
-
-- [ ] Read and followed Crossplane's [contribution process].
-- [ ] Added or updated unit tests for my change.
-
-[contribution process]: https://git.io/fj2m9
-[docs]: https://docs.crossplane.io/contribute/contribute
+- [ ] I added or updated unit tests.
+- [ ] I updated `README.md` if the URI format, input, supported types or permissions changed.

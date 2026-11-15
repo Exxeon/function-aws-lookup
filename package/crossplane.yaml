@@ -4,8 +4,8 @@ kind: Function
 metadata:
   name: function-aws-lookup
   annotations:
-    meta.crossplane.io/maintainer: Gideon Maree
-    meta.crossplane.io/source: github.com/giepa/function-aws-lookup
+    meta.crossplane.io/maintainer: Exxeon
+    meta.crossplane.io/source: github.com/Exxeon/function-aws-lookup
     meta.crossplane.io/description: |
       Adopts existing AWS resources by tag. Resolves aws-lookup:// URIs in the
       crossplane.io/external-name annotation of composed resources.

@@ -143,7 +143,7 @@ All fields are optional.
 
 ```yaml
 input:
-  apiVersion: awslookup.fn.gideonmaree.dev/v1beta1
+  apiVersion: awslookup.fn.exxeon.io/v1beta1
   kind: Input
   # Region to search when a resource has no spec.forProvider.region.
   region: eu-west-1

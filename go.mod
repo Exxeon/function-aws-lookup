@@ -1,4 +1,4 @@
-module github.com/giepa/function-aws-lookup
+module github.com/Exxeon/function-aws-lookup
 
 go 1.26.0
 

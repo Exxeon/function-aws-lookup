@@ -8,8 +8,8 @@ import (
 	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/crossplane/function-sdk-go/resource"
 
-	"github.com/giepa/function-aws-lookup/internal/awsclient"
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/internal/awsclient"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -215,7 +215,7 @@ var _ = Describe("RunFunction", func() {
 	})
 
 	It("removes the annotation when nothing matches and onNotFound is Create", func() {
-		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.gideonmaree.dev/v1beta1", "kind": "Input", "onNotFound": "Create"}`)
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Create"}`)
 
 		rsp := run()
 
@@ -248,7 +248,7 @@ var _ = Describe("RunFunction", func() {
 			"kind": "Bucket",
 			"metadata": {"annotations": {"crossplane.io/external-name": "` + bucketURI + `"}}
 		}`)}
-		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.gideonmaree.dev/v1beta1", "kind": "Input", "region": "eu-central-1"}`)
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "region": "eu-central-1"}`)
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
 
 		run()
@@ -272,7 +272,7 @@ var _ = Describe("RunFunction", func() {
 				Data: map[string][]byte{"credentials": []byte("[default]\naws_access_key_id=AKID\naws_secret_access_key=secret\n")},
 			}}},
 		}
-		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.gideonmaree.dev/v1beta1", "kind": "Input", "assumeRoleARN": "arn:aws:iam::123456789012:role/adopt"}`)
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "assumeRoleARN": "arn:aws:iam::123456789012:role/adopt"}`)
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
 
 		run()

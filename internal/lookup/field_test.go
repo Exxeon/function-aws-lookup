@@ -1,7 +1,7 @@
 package lookup_test
 
 import (
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"

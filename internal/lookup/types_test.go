@@ -3,7 +3,7 @@ package lookup_test
 import (
 	"strings"
 
-	"github.com/giepa/function-aws-lookup/internal/lookup"
+	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
