@@ -75,7 +75,15 @@ crossplane render xr.yaml composition.yaml functions.yaml --function-credentials
 
 ## Git and CI
 
-- Don't push to `main`. Work on a branch and open a pull request.
+- Don't push to `main`. Work on a branch and open a pull request. The "Protect main" ruleset
+  enforces this for everyone, admins included:
+  - a maintainer from `.github/CODEOWNERS` other than the last pusher must approve, and new pushes
+    dismiss earlier approvals;
+  - `lint`, `unit-test`, `build (amd64)` and `build (arm64)` must pass on a branch that is up to
+    date with `main`;
+  - all review threads must be resolved;
+  - pull requests are squash-merged, with the pull request title as the commit message, so the
+    title must follow Conventional Commits.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
 - `.github/workflows/ci.yml` lints, tests and builds the package for amd64 and arm64 on every pull
   request. On pushes to `main` it also pushes the package to `ghcr.io/exxeon/function-aws-lookup`
