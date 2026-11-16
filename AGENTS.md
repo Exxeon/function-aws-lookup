@@ -13,6 +13,7 @@ Public repository: https://github.com/Exxeon/function-aws-lookup. Go module:
 | Path | Contents |
 | --- | --- |
 | `main.go` | CLI and gRPC server. Wires `awsclient.NewFinder` into the Function. |
+| `cliff.toml` | git-cliff configuration for automatic version bumps from Conventional Commits. |
 | `fn.go` | `RunFunction`: walks desired resources, resolves URIs, writes results. |
 | `input/v1beta1/` | Function input type. `zz_generated.deepcopy.go` is generated. |
 | `internal/lookup/` | URI parsing (`uri.go`), ARN parsing (`arn.go`), ARN-to-CloudFormation lookup (`cloudformation.go`), Cloud Control field extraction (`field.go`). No AWS calls. |
@@ -90,8 +91,13 @@ crossplane render xr.yaml composition.yaml functions.yaml --function-credentials
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
 - `.github/workflows/ci.yml` lints, tests and builds the package for amd64 and arm64 on every pull
   request. On pushes to `main` it also pushes the package to `ghcr.io/exxeon/function-aws-lookup`
-  (lowercase; registry names can't contain capitals). A `workflow_dispatch` run with a `version`
-  input publishes a release version.
+  (lowercase; registry names can't contain capitals), after lint, tests and both builds pass.
+  On `main`, git-cliff uses `cliff.toml`: `fix:`/`perf:` bump patch, `feat:` bumps minor, and
+  breaking changes bump major. The first stable release is `v0.1.0`.
+  Without release-worthy commits it publishes a development version. Publishing is serialised;
+  release tags are recorded before pushing the package, and reruns reuse a tag on the same commit.
+  Pushing a `v*` version tag or a `workflow_dispatch` run with a `version` input publishes a
+  release version. Release versions use `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
 
 ## Writing
 

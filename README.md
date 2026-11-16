@@ -240,6 +240,86 @@ crossplane xpkg build -f package --embed-runtime-image=runtime
 
 To try the function with `crossplane render`, see [example](example/).
 
+## Publishing
+
+CI publishes a multi-platform Crossplane package for `linux/amd64` and
+`linux/arm64` to `ghcr.io/exxeon/function-aws-lookup` after lint, unit tests
+and both builds pass. Pull requests build and check the package without
+publishing it.
+
+- Pushes to `main` use [git-cliff](https://git-cliff.org/) to calculate a
+  release version from
+  [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
+  since the latest stable Git tag in the branch's history. Rules live in
+  `cliff.toml`; the largest applicable bump wins:
+
+  | Commit | Bump | Example from `v1.2.3` |
+  | --- | --- | --- |
+  | `fix:` or `perf:` (including scopes) | Patch | `v1.2.4` |
+  | `feat:` (including scopes) | Minor | `v1.3.0` |
+  | `!`, `BREAKING CHANGE:` or `BREAKING-CHANGE:` | Major | `v2.0.0` |
+  | Other types, such as `docs:`, `ci:` or `chore:` | None | Development build |
+
+  Pull requests are squash-merged, so use a Conventional Commit title such
+  as `fix(lookup): handle missing tags` or `feat!: change the input API`.
+  Breaking-change footers must be in the resulting squash commit message.
+  Major bumps also apply before `v1.0.0`. The first release is `v0.1.0`.
+  Prerelease and development tags are ignored when calculating stable versions.
+
+- Pushes to `main` with no release-worthy commits, or to a `release-*`
+  branch, publish a development version:
+  `v0.0.0-<UTC-commit-timestamp>-<12-character-commit-SHA>`.
+- Pushing a version tag such as `v0.1.0` or `v0.1.0-rc.1` publishes that
+  version. Tag the merged commit you want to release:
+
+  ```shell
+  git tag v0.1.0 <commit>
+  git push origin v0.1.0
+  ```
+
+- To publish manually, run the **CI** workflow in GitHub Actions, select
+  the branch or tag, and supply `version`. Leave it empty for a development
+  version on a branch, or to use the selected tag's version. Explicit
+  versions are recorded as Git tags too, so automatic bumps account for
+  manual stable releases. Make stable releases from the history of `main`.
+
+Release versions must use `vMAJOR.MINOR.PATCH`, optionally followed by a
+prerelease suffix such as `-rc.1`. Build metadata (`+...`) is not supported
+in registry tags. Publishing a package does not create a GitHub Release.
+The workflow's run summary shows the published package reference.
+
+CI pins the git-cliff version in `.github/workflows/ci.yml`. With git-cliff
+installed and full Git history and tags, preview the next version with:
+
+```shell
+git-cliff --use-branch-tags --bumped-version
+```
+
+Publishing jobs are serialised and fetch current tags before calculating
+the version. After all checks pass, CI reserves the version with a Git tag
+and publishes the already built package in the same run. If publication
+fails, rerun that workflow: the tag is reused without another bump. Existing
+tags are never moved to a different commit; conflicting versions fail before
+publishing. Documentation-only changes produce development packages even
+when git-cliff's version preview prints the previous stable version.
+
+Publishing uses the repository's `GITHUB_TOKEN` with `packages: write` and
+`contents: write` for release tags; no separate registry secret is needed.
+The token's tag push does not start another workflow. For public installation,
+set the GHCR package's visibility to **Public** in its GitHub package settings
+after its first publication.
+
+Install a published version with:
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-aws-lookup
+spec:
+  package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+```
+
 [functions]: https://docs.crossplane.io/latest/composition/compositions/
 [tagging-api]: https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html
 [cloud-control]: https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/API_GetResource.html
