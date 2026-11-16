@@ -20,6 +20,7 @@ env:
   GO_VERSION: '1.26.0'
   GOLANGCI_VERSION: 'v2.12.0'
   DOCKER_BUILDX_VERSION: 'v0.24.0'
+  GIT_CLIFF_VERSION: '2.14.2'
 
   # Lowercased before publishing because registry names cannot contain capitals.
   XPKG: ghcr.io/${{ github.repository }}
@@ -33,6 +34,16 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup git-cliff
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@${{ env.GIT_CLIFF_VERSION }}
+
+      - name: Validate Release Configuration
+        run: git-cliff --unreleased --bump --context > /dev/null
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -122,8 +133,12 @@ jobs:
   push:
     if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-26.04
+    # Calculate versions after acquiring the lock and fetching current tags.
+    concurrency:
+      group: ghcr-publishing
+      cancel-in-progress: false
     permissions:
-      contents: read
+      contents: write
       packages: write
     needs:
       - lint
@@ -132,6 +147,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup git-cliff for Automatic Versioning
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff@${{ env.GIT_CLIFF_VERSION }}
 
       - name: Set Package Version
         env:
@@ -145,6 +168,10 @@ jobs:
               exit 1
             fi
             version="$GITHUB_REF_NAME"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            # Release only when git-cliff finds changes, or retry a tag at HEAD.
+            version=$(git-cliff --use-branch-tags --unreleased --bump --context |
+              jq -r --arg sha "$GITHUB_SHA" '.[0] | select((.commits | length) > 0 or .previous.commit_id == $sha) | .version // empty')
           fi
 
           if [[ -n "$version" ]]; then
@@ -156,6 +183,15 @@ jobs:
               echo "::error::Use a version such as v0.1.0 or v0.1.0-rc.1 (at most 128 characters, without build metadata)."
               exit 1
             fi
+            # A release tag must always identify the commit being published.
+            if git show-ref --verify --quiet "refs/tags/$version"; then
+              tagged_commit=$(git rev-parse "refs/tags/$version^{commit}")
+              if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+                echo "::error::The release tag already points to a different commit."
+                exit 1
+              fi
+            fi
+            echo "RECORD_RELEASE_TAG=true" >> "$GITHUB_ENV"
           else
             timestamp=$(date -u -d "@$(git show -s --format=%ct)" +%Y%m%d%H%M%S)
             version="v0.0.0-$timestamp-$(git rev-parse --short=12 HEAD)"
@@ -180,6 +216,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Reserve the version before publishing; a failed push must not allow a
+      # later commit to overwrite that version. Retries reuse the existing tag.
+      - name: Record Release Tag
+        if: env.RECORD_RELEASE_TAG == 'true'
+        shell: bash
+        run: |
+          if ! git show-ref --verify --quiet "refs/tags/$XPKG_VERSION"; then
+            git -c tag.gpgsign=false tag "$XPKG_VERSION" "$GITHUB_SHA"
+          fi
+          git push origin "refs/tags/$XPKG_VERSION"
+
+      # GITHUB_TOKEN tag pushes do not trigger another workflow. Publish here
+      # so no second build or extra token is needed.
       - name: Push Multi-Platform Package to GitHub Container Registry
         shell: bash
         run: |
