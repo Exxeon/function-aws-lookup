@@ -90,8 +90,9 @@ crossplane render xr.yaml composition.yaml functions.yaml --function-credentials
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
 - `.github/workflows/ci.yml` lints, tests and builds the package for amd64 and arm64 on every pull
   request. On pushes to `main` it also pushes the package to `ghcr.io/exxeon/function-aws-lookup`
-  (lowercase; registry names can't contain capitals). A `workflow_dispatch` run with a `version`
-  input publishes a release version.
+  (lowercase; registry names can't contain capitals), after lint, tests and both builds pass.
+  Pushing a `v*` version tag or a `workflow_dispatch` run with a `version` input publishes a
+  release version. Release versions use `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
 
 ## Writing
 

@@ -240,6 +240,48 @@ crossplane xpkg build -f package --embed-runtime-image=runtime
 
 To try the function with `crossplane render`, see [example](example/).
 
+## Publishing
+
+CI publishes a multi-platform Crossplane package for `linux/amd64` and
+`linux/arm64` to `ghcr.io/exxeon/function-aws-lookup` after lint, unit tests
+and both builds pass. Pull requests build and check the package without
+publishing it.
+
+- Pushes to `main` or a `release-*` branch publish a development version:
+  `v0.0.0-<UTC-commit-timestamp>-<12-character-commit-SHA>`.
+- Pushing a version tag such as `v0.1.0` or `v0.1.0-rc.1` publishes that
+  version. Tag the merged commit you want to release:
+
+  ```shell
+  git tag v0.1.0 <commit>
+  git push origin v0.1.0
+  ```
+
+- To publish manually, run the **CI** workflow in GitHub Actions, select
+  the branch or tag, and supply `version`. Leave it empty for a development
+  version on a branch, or to use the selected tag's version.
+
+Release versions must use `vMAJOR.MINOR.PATCH`, optionally followed by a
+prerelease suffix such as `-rc.1`. Build metadata (`+...`) is not supported
+in registry tags. Publishing a package does not create a GitHub Release.
+The workflow's run summary shows the published package reference.
+
+Publishing uses the repository's `GITHUB_TOKEN` with `packages: write`; no
+separate registry secret is needed. For public installation, set the GHCR
+package's visibility to **Public** in its GitHub package settings after its
+first publication.
+
+Install a published version with:
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-aws-lookup
+spec:
+  package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+```
+
 [functions]: https://docs.crossplane.io/latest/composition/compositions/
 [tagging-api]: https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html
 [cloud-control]: https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/API_GetResource.html

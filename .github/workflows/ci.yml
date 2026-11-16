@@ -5,11 +5,14 @@ on:
     branches:
       - main
       - release-*
+    tags:
+      - 'v*'
   pull_request: {}
   workflow_dispatch:
     inputs:
       version:
-        description: Package version (e.g. v0.1.0)
+        description: Package version (e.g. v0.1.0 or v0.1.0-rc.1); leave empty for a development build
+        type: string
         required: false
 
 env:
@@ -18,14 +21,8 @@ env:
   GOLANGCI_VERSION: 'v2.12.0'
   DOCKER_BUILDX_VERSION: 'v0.24.0'
 
-  # The package to push, without a version tag. The default matches GitHub. For
-  # example xpkg.crossplane.io/crossplane/function-aws-lookup. Note that
-  # xpkg.crossplane.io is just an alias for ghcr.io, so we upload to ghcr.io but
-  # this'll be pulled from xpkg.crossplane.io.
-  XPKG: ghcr.io/${{ github.repository}}
-
-  # The package version to push. The default is 0.0.0-gitsha.
-  XPKG_VERSION: ${{ inputs.version }}
+  # Lowercased before publishing because registry names cannot contain capitals.
+  XPKG: ghcr.io/${{ github.repository }}
 
 permissions:
   contents: read
@@ -87,7 +84,6 @@ jobs:
         uses: docker/setup-buildx-action@v4
         with:
           version: ${{ env.DOCKER_BUILDX_VERSION }}
-          install: true
 
       - name: Checkout
         uses: actions/checkout@v7
@@ -130,16 +126,47 @@ jobs:
       contents: read
       packages: write
     needs:
+      - lint
+      - unit-test
       - build
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Set Package Version
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          version="$REQUESTED_VERSION"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            if [[ -n "$version" && "$version" != "$GITHUB_REF_NAME" ]]; then
+              echo "::error::The requested version must match the Git tag."
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
+          fi
+
+          if [[ -n "$version" ]]; then
+            # SemVer without build metadata, which OCI tags cannot represent.
+            number='(0|[1-9][0-9]*)'
+            identifier="($number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+            semver="^v$number\\.$number\\.$number(-$identifier(\\.$identifier)*)?$"
+            if [[ ! "$version" =~ $semver || ${#version} -gt 128 ]]; then
+              echo "::error::Use a version such as v0.1.0 or v0.1.0-rc.1 (at most 128 characters, without build metadata)."
+              exit 1
+            fi
+          else
+            timestamp=$(date -u -d "@$(git show -s --format=%ct)" +%Y%m%d%H%M%S)
+            version="v0.0.0-$timestamp-$(git rev-parse --short=12 HEAD)"
+          fi
+
+          echo "XPKG_VERSION=$version" >> "$GITHUB_ENV"
+
       - name: Download Single-Platform Packages
         uses: actions/download-artifact@v8
         with:
-          # See https://github.com/docker/build-push-action/blob/263435/README.md#summaries
-          pattern: "!*.dockerbuild"
+          pattern: package-*
           path: .
           merge-multiple: true
 
@@ -150,18 +177,12 @@ jobs:
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
+          username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # If a version wasn't explicitly passed as a workflow_dispatch input we
-      # default to version v0.0.0-<git-commit-date>-<git-short-sha>, for example
-      # v0.0.0-20231101115142-1091066df799. This is a simple implementation of
-      # Go's pseudo-versions: https://go.dev/ref/mod#pseudo-versions.
-      - name: Set Default Multi-Platform Package Version
-        if: env.XPKG_VERSION == ''
-        run: echo "XPKG_VERSION=v0.0.0-$(date -d@$(git show -s --format=%ct) +%Y%m%d%H%M%S)-$(git rev-parse --short=12 HEAD)" >> $GITHUB_ENV
-
       - name: Push Multi-Platform Package to GitHub Container Registry
-        # XPKG repo name can't contain uppercase characters like UpboundCare, we need to lowercase if the GithubOrg contains them.
-        # See https://github.com/orgs/community/discussions/25768#discussioncomment-8057564 for XPKG@L lowercase explanation
-        run: "./crossplane --verbose xpkg push --package-files $(echo *.xpkg|tr ' ' ,) ${XPKG@L}:${{ env.XPKG_VERSION }}"
+        shell: bash
+        run: |
+          package="${XPKG,,}:$XPKG_VERSION"
+          ./crossplane --verbose xpkg push --package-files=amd64.xpkg,arm64.xpkg "$package"
+          echo "Published \`$package\` for linux/amd64 and linux/arm64." >> "$GITHUB_STEP_SUMMARY"
