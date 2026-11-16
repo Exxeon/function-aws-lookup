@@ -5,6 +5,7 @@ package lookup
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -12,11 +13,21 @@ import (
 // Scheme of an aws-lookup URI.
 const Scheme = "aws-lookup"
 
+var (
+	validService = regexp.MustCompile(`^[a-z0-9-]+$`)
+	validType    = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+)
+
 // Query is a parsed aws-lookup URI, for example
-// aws-lookup://rds/instance?team=payments&env=prod#DbiResourceId.
+// aws-lookup://rds/db?team=payments&env=prod#DbiResourceId.
 type Query struct {
-	// Type of the AWS resource to find.
-	Type ResourceType
+	// Service is the service in the ARN, for example rds.
+	Service string
+
+	// Type is the resource type in the ARN, for example db. It is empty for
+	// resources whose ARN has no resource type, such as S3 buckets
+	// (arn:aws:s3:::my-bucket) and SNS topics.
+	Type string
 
 	// Tags the resource must have. A tag with several values matches any of
 	// them. A tag with no values matches any value.
@@ -43,14 +54,9 @@ func Parse(s string) (Query, error) {
 	}
 
 	service := u.Host
-	kind := strings.Trim(u.Path, "/")
-	if service == "" || kind == "" {
-		return Query{}, fmt.Errorf("%q: must have the form %s://<service>/<type>?<tag>=<value>[#<field>]", s, Scheme)
-	}
-
-	t, ok := Lookup(service, kind)
-	if !ok {
-		return Query{}, fmt.Errorf("%q: unsupported resource type %s/%s, supported types are %s", s, service, kind, strings.Join(Supported(), ", "))
+	kind := strings.TrimPrefix(u.Path, "/")
+	if !validService.MatchString(service) || (kind != "" && !validType.MatchString(kind)) {
+		return Query{}, fmt.Errorf("%q: must have the form %s://<service>[/<type>]?<tag>=<value>[#<field>], with the service and type from the ARN", s, Scheme)
 	}
 
 	values, err := url.ParseQuery(u.RawQuery)
@@ -80,16 +86,16 @@ func Parse(s string) (Query, error) {
 		}
 	}
 
-	return Query{Type: t, Tags: tags, Field: u.Fragment}, nil
+	return Query{Service: service, Type: kind, Tags: tags, Field: u.Fragment}, nil
 }
 
-// ExternalNameField returns the Cloud Control property that holds the
-// external name, or an empty string if no Cloud Control call is needed.
-func (q Query) ExternalNameField() string {
-	if q.Field != "" {
-		return q.Field
+// Filter returns the resource type filter for the Resource Groups Tagging
+// API, in the form service[:type].
+func (q Query) Filter() string {
+	if q.Type == "" {
+		return q.Service
 	}
-	return q.Type.DefaultField
+	return q.Service + ":" + q.Type
 }
 
 // String returns the query as a canonical aws-lookup URI, with sorted tags.
@@ -111,7 +117,11 @@ func (q Query) String() string {
 		}
 	}
 
-	s := fmt.Sprintf("%s://%s/%s?%s", Scheme, q.Type.Service, q.Type.Name, strings.Join(params, "&"))
+	path := ""
+	if q.Type != "" {
+		path = "/" + q.Type
+	}
+	s := fmt.Sprintf("%s://%s%s?%s", Scheme, q.Service, path, strings.Join(params, "&"))
 	if q.Field != "" {
 		s += "#" + q.Field
 	}

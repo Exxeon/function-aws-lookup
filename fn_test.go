@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/crossplane/function-sdk-go/logging"
 	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
@@ -29,7 +30,8 @@ type fakeFinder struct {
 	err   error
 	calls []findCall
 
-	properties     string
+	// resources maps "<CloudFormation type> <identifier>" to properties.
+	resources      map[string]string
 	propertiesErr  error
 	propertiesCall []propertiesCall
 }
@@ -41,10 +43,19 @@ func (f *fakeFinder) Find(_ context.Context, region string, q lookup.Query) ([]s
 
 func (f *fakeFinder) Properties(_ context.Context, region, typeName, identifier string) (string, error) {
 	f.propertiesCall = append(f.propertiesCall, propertiesCall{region: region, typeName: typeName, identifier: identifier})
-	return f.properties, f.propertiesErr
+	if f.propertiesErr != nil {
+		return "", f.propertiesErr
+	}
+	if p, ok := f.resources[typeName+" "+identifier]; ok {
+		return p, nil
+	}
+	return "", fmt.Errorf("%w: %s %s", awsclient.ErrWrongType, typeName, identifier)
 }
 
-const bucketURI = "aws-lookup://s3/bucket?tag1=mytag&tag2=othervalue"
+const (
+	bucketURI   = "aws-lookup://s3?tag1=mytag&tag2=othervalue"
+	bucketProps = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+)
 
 func bucket(annotation string) *fnv1.Resource {
 	return &fnv1.Resource{Resource: resource.MustStructJSON(`{
@@ -121,7 +132,7 @@ var _ = Describe("RunFunction", func() {
 	It("reads the field in the fragment with Cloud Control", func() {
 		req.Desired.Resources["bucket"] = bucket(bucketURI + "#DomainName")
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
-		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+		finder.resources = map[string]string{"AWS::S3::Bucket legacy-bucket": bucketProps}
 
 		rsp := run()
 
@@ -130,36 +141,69 @@ var _ = Describe("RunFunction", func() {
 		Expect(finder.propertiesCall).To(Equal([]propertiesCall{{region: "eu-west-1", typeName: "AWS::S3::Bucket", identifier: "legacy-bucket"}}))
 	})
 
-	It("reads the DBI resource ID of an RDS instance without a fragment", func() {
-		req.Desired = &fnv1.State{Resources: map[string]*fnv1.Resource{"db": {Resource: resource.MustStructJSON(`{
-			"apiVersion": "rds.aws.m.upbound.io/v1beta1",
-			"kind": "Instance",
-			"metadata": {"annotations": {"crossplane.io/external-name": "aws-lookup://rds/instance?team=payments"}},
-			"spec": {"forProvider": {"region": "eu-west-1"}}
-		}`)}}}
+	It("uses the ID from the ARN without a fragment", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://rds/db?team=payments")
 		finder.arns = []string{"arn:aws:rds:eu-west-1:123456789012:db:orders"}
-		finder.properties = `{"DBInstanceIdentifier": "orders", "DbiResourceId": "db-ABC123"}`
 
 		rsp := run()
 
 		Expect(fatal(rsp)).To(BeEmpty())
-		Expect(externalName(rsp, "db")).To(Equal("db-ABC123"))
+		Expect(externalName(rsp, "bucket")).To(Equal("orders"))
+		Expect(finder.propertiesCall).To(BeEmpty())
+	})
+
+	It("reads the DBI resource ID of an RDS instance", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://rds/db?team=payments#DbiResourceId")
+		finder.arns = []string{"arn:aws:rds:eu-west-1:123456789012:db:orders"}
+		finder.resources = map[string]string{"AWS::RDS::DBInstance orders": `{"DBInstanceIdentifier": "orders", "DbiResourceId": "db-ABC123"}`}
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "bucket")).To(Equal("db-ABC123"))
 		Expect(finder.propertiesCall).To(Equal([]propertiesCall{{region: "eu-west-1", typeName: "AWS::RDS::DBInstance", identifier: "orders"}}))
 	})
 
-	It("uses the ARN as the Cloud Control identifier when the type needs it", func() {
-		req.Desired.Resources["bucket"] = bucket("aws-lookup://sns/topic?team=payments#TopicName")
+	It("tries the ARN when Cloud Control doesn't know the ID", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://sns?team=payments#TopicName")
 		finder.arns = []string{"arn:aws:sns:eu-west-1:123456789012:alerts"}
-		finder.properties = `{"TopicArn": "arn:aws:sns:eu-west-1:123456789012:alerts", "TopicName": "alerts"}`
+		finder.resources = map[string]string{"AWS::SNS::Topic arn:aws:sns:eu-west-1:123456789012:alerts": `{"TopicName": "alerts"}`}
 
 		Expect(externalName(run(), "bucket")).To(Equal("alerts"))
-		Expect(finder.propertiesCall[0].identifier).To(Equal("arn:aws:sns:eu-west-1:123456789012:alerts"))
+		Expect(finder.propertiesCall).To(Equal([]propertiesCall{
+			{region: "eu-west-1", typeName: "AWS::SNS::Topic", identifier: "alerts"},
+			{region: "eu-west-1", typeName: "AWS::SNS::Topic", identifier: "arn:aws:sns:eu-west-1:123456789012:alerts"},
+		}))
+	})
+
+	It("tries every CloudFormation type that shares the ARN format", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://datasync/location?team=payments#LocationUri")
+		arn := "arn:aws:datasync:eu-west-1:123456789012:location/loc-0abc"
+		finder.arns = []string{arn}
+		finder.resources = map[string]string{"AWS::DataSync::LocationS3 " + arn: `{"LocationUri": "s3://legacy-bucket/"}`}
+
+		Expect(externalName(run(), "bucket")).To(Equal("s3://legacy-bucket/"))
+		Expect(len(finder.propertiesCall)).To(BeNumerically(">", 2))
+	})
+
+	It("fails when Cloud Control has no resource for any candidate", func() {
+		req.Desired.Resources["bucket"] = bucket(bucketURI + "#DomainName")
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+
+		Expect(fatal(run())).To(ContainSubstring("Cloud Control has no resource for ARN arn:aws:s3:::legacy-bucket, tried AWS::S3::Bucket legacy-bucket"))
+	})
+
+	It("fails when no CloudFormation type is known for the ARN", func() {
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://nope/thing?team=payments#Name")
+		finder.arns = []string{"arn:aws:nope:eu-west-1:123456789012:thing/x"}
+
+		Expect(fatal(run())).To(ContainSubstring(`no CloudFormation type is known for ARN arn:aws:nope:eu-west-1:123456789012:thing/x, so fields can't be read; leave out the #field to use "x"`))
 	})
 
 	It("fails and lists the available properties when the field is missing", func() {
 		req.Desired.Resources["bucket"] = bucket(bucketURI + "#Nope")
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
-		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+		finder.resources = map[string]string{"AWS::S3::Bucket legacy-bucket": bucketProps}
 
 		Expect(fatal(run())).To(ContainSubstring("available properties are BucketName, DomainName"))
 	})
@@ -237,9 +281,9 @@ var _ = Describe("RunFunction", func() {
 	})
 
 	It("fails on an invalid URI", func() {
-		req.Desired.Resources["bucket"] = bucket("aws-lookup://s3/object?a=b")
+		req.Desired.Resources["bucket"] = bucket("aws-lookup://S3?a=b")
 
-		Expect(fatal(run())).To(ContainSubstring("unsupported resource type"))
+		Expect(fatal(run())).To(ContainSubstring("must have the form"))
 	})
 
 	It("uses the input region when the resource has none", func() {
@@ -292,7 +336,7 @@ var _ = Describe("RunFunction", func() {
 	})
 
 	It("looks up identical queries once per request", func() {
-		req.Desired.Resources["other"] = bucket("aws-lookup://s3/bucket?tag2=othervalue&tag1=mytag")
+		req.Desired.Resources["other"] = bucket("aws-lookup://s3?tag2=othervalue&tag1=mytag")
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
 
 		rsp := run()
@@ -305,7 +349,7 @@ var _ = Describe("RunFunction", func() {
 		req.Desired.Resources["bucket"] = bucket(bucketURI + "#BucketName")
 		req.Desired.Resources["other"] = bucket(bucketURI + "#DomainName")
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
-		finder.properties = `{"BucketName": "legacy-bucket", "DomainName": "legacy-bucket.s3.amazonaws.com"}`
+		finder.resources = map[string]string{"AWS::S3::Bucket legacy-bucket": bucketProps}
 
 		rsp := run()
 

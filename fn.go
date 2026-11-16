@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	stderrors "errors"
 	"maps"
 	"slices"
 	"strings"
@@ -175,7 +176,7 @@ func (r *resolver) find(ctx context.Context, region string, q lookup.Query) ([]l
 
 	var matches []lookup.Resource
 	for _, a := range arns {
-		res, ok, err := q.Type.Resource(a)
+		res, ok, err := q.Resource(a)
 		if err != nil {
 			return nil, err
 		}
@@ -189,29 +190,59 @@ func (r *resolver) find(ctx context.Context, region string, q lookup.Query) ([]l
 	return matches, nil
 }
 
-// externalName returns the external name of res. It reads a Cloud Control
-// property if the query or the resource type asks for one.
+// externalName returns the external name of res: the ID from its ARN, or the
+// Cloud Control property named in the URI.
 func (r *resolver) externalName(ctx context.Context, region string, q lookup.Query, res lookup.Resource) (string, error) {
-	field := q.ExternalNameField()
-	if field == "" {
-		return q.Type.ExternalName(res), nil
+	if q.Field == "" {
+		return res.ID, nil
 	}
 
-	key := region + " " + res.ARN
-	props, ok := r.properties[key]
+	props, ok := r.properties[res.ARN]
 	if !ok {
-		f, err := r.getFinder(ctx, region)
+		var err error
+		props, err = r.readProperties(ctx, region, res)
 		if err != nil {
 			return "", err
 		}
-		props, err = f.Properties(ctx, region, q.Type.CloudFormationType, q.Type.CloudControlIdentifier(res))
-		if err != nil {
-			return "", err
-		}
-		r.properties[key] = props
+		r.properties[res.ARN] = props
 	}
 
-	return lookup.Field(props, field)
+	return lookup.Field(props, q.Field)
+}
+
+// readProperties reads a resource with Cloud Control. Several CloudFormation
+// types can share an ARN format, and the Cloud Control identifier is either
+// the ID or the ARN, so it tries each combination until one exists.
+func (r *resolver) readProperties(ctx context.Context, region string, res lookup.Resource) (string, error) {
+	types := lookup.CloudFormationTypes(res.ARN)
+	if len(types) == 0 {
+		return "", errors.Errorf("no CloudFormation type is known for ARN %s, so fields can't be read; leave out the #field to use %q", res.ARN, res.ID)
+	}
+
+	f, err := r.getFinder(ctx, region)
+	if err != nil {
+		return "", err
+	}
+
+	identifiers := []string{res.ID}
+	if res.ARN != res.ID {
+		identifiers = append(identifiers, res.ARN)
+	}
+
+	var tried []string
+	for _, t := range types {
+		for _, id := range identifiers {
+			props, err := f.Properties(ctx, region, t, id)
+			if err == nil {
+				return props, nil
+			}
+			if !stderrors.Is(err, awsclient.ErrWrongType) {
+				return "", err
+			}
+			tried = append(tried, t+" "+id)
+		}
+	}
+	return "", errors.Errorf("Cloud Control has no resource for ARN %s, tried %s", res.ARN, strings.Join(tried, ", "))
 }
 
 func (r *resolver) getFinder(ctx context.Context, region string) (awsclient.Finder, error) {

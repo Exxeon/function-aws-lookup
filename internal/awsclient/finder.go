@@ -4,6 +4,7 @@ package awsclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	rgt "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi"
 	rgttypes "github.com/aws/aws-sdk-go-v2/service/resourcegroupstaggingapi/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 
 	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 )
@@ -29,8 +31,14 @@ type Finder interface {
 	Find(ctx context.Context, region string, q lookup.Query) ([]string, error)
 
 	// Properties returns the Cloud Control properties of a resource as JSON.
+	// It returns an error that wraps ErrWrongType if there is no resource of
+	// that type with that identifier.
 	Properties(ctx context.Context, region, typeName, identifier string) (string, error)
 }
+
+// ErrWrongType means that Cloud Control has no resource of the requested
+// type with the requested identifier.
+var ErrWrongType = errors.New("no resource of this type with this identifier")
 
 // Options configure a Finder.
 type Options struct {
@@ -87,7 +95,7 @@ func NewFinder(ctx context.Context, o Options) (Finder, error) {
 // Find returns the ARNs of the resources in region that match q.
 func (f *AWSFinder) Find(ctx context.Context, region string, q lookup.Query) ([]string, error) {
 	in := &rgt.GetResourcesInput{
-		ResourceTypeFilters: []string{q.Type.Filter},
+		ResourceTypeFilters: []string{q.Filter()},
 		TagFilters:          TagFilters(q.Tags),
 	}
 
@@ -111,6 +119,9 @@ func (f *AWSFinder) Properties(ctx context.Context, region, typeName, identifier
 		TypeName:   aws.String(typeName),
 		Identifier: aws.String(identifier),
 	})
+	if isWrongType(err) {
+		return "", fmt.Errorf("%w: %w", ErrWrongType, err)
+	}
 	if err != nil {
 		return "", fmt.Errorf("cannot get %s %s from the Cloud Control API in %s: %w", typeName, identifier, region, err)
 	}
@@ -118,6 +129,22 @@ func (f *AWSFinder) Properties(ctx context.Context, region, typeName, identifier
 		return "", fmt.Errorf("the Cloud Control API returned no properties for %s %s", typeName, identifier)
 	}
 	return aws.ToString(out.ResourceDescription.Properties), nil
+}
+
+// isWrongType reports whether err means that Cloud Control has no resource
+// of the requested type with the requested identifier. The caller can then
+// try another CloudFormation type or identifier.
+func isWrongType(err error) bool {
+	var ae smithy.APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	switch ae.ErrorCode() {
+	case "ResourceNotFoundException", "InvalidRequestException", "TypeNotFoundException",
+		"UnsupportedActionException", "GeneralServiceException":
+		return true
+	}
+	return false
 }
 
 func (f *AWSFinder) taggingClient(region string) *rgt.Client {
