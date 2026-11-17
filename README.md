@@ -32,6 +32,99 @@ metadata:
 If the resources follow the organisation's tagging convention, adopting them
 needs no list of names or IDs.
 
+## Installation
+
+The function needs Crossplane v2. Install it as a package:
+
+```yaml
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-aws-lookup
+spec:
+  package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+```
+
+```shell
+kubectl apply -f function.yaml
+kubectl wait function.pkg/function-aws-lookup --for=condition=Healthy --timeout=5m
+```
+
+Pin a release version. Every release has a Git tag, listed on the
+[tags page][tags], and the package supports amd64 and arm64. Commits that
+don't change the function are published as development builds
+(`v0.0.0-<date>-<commit>`); don't use those in production.
+
+The function then needs AWS credentials. Give it either:
+
+- **a secret**, passed to the pipeline step. Create it with an AWS shared
+  credentials file:
+
+  ```shell
+  kubectl -n crossplane-system create secret generic aws-creds \
+    --from-file=credentials=./aws-credentials.ini
+  ```
+
+  and reference it from the step, as shown in [Credentials](#credentials).
+
+- **an IAM role for the function's pod**, with IRSA or EKS Pod Identity. Create
+  a `DeploymentRuntimeConfig` that sets the service account, and reference it
+  from the `Function`:
+
+  ```yaml
+  apiVersion: pkg.crossplane.io/v1beta1
+  kind: DeploymentRuntimeConfig
+  metadata:
+    name: function-aws-lookup
+  spec:
+    serviceAccountTemplate:
+      metadata:
+        name: function-aws-lookup
+        annotations:
+          # For IRSA. For EKS Pod Identity, leave out the annotation and create
+          # a pod identity association for this service account in
+          # crossplane-system instead.
+          eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/function-aws-lookup
+  ---
+  apiVersion: pkg.crossplane.io/v1
+  kind: Function
+  metadata:
+    name: function-aws-lookup
+  spec:
+    package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+    runtimeConfigRef:
+      name: function-aws-lookup
+  ```
+
+Then add the function to a composition, after the steps that compose your
+resources:
+
+```yaml
+pipeline:
+# ... steps that compose resources with aws-lookup:// external names ...
+- step: adopt-existing-resources
+  functionRef:
+    name: function-aws-lookup
+  input:
+    apiVersion: awslookup.fn.exxeon.io/v1beta1
+    kind: Input
+    region: eu-west-1
+  credentials:          # leave out when using IRSA or Pod Identity
+  - name: aws-creds
+    source: Secret
+    secretRef:
+      namespace: crossplane-system
+      name: aws-creds
+```
+
+[example/composition.yaml](example/composition.yaml) is a complete
+composition. If a lookup fails, the composite resource's `Synced` condition
+shows why:
+
+```shell
+kubectl get <kind> <name> -o jsonpath='{.status.conditions[?(@.type=="Synced")].message}'
+```
+
 ## How it works
 
 For every desired composed resource whose external name starts with
@@ -321,6 +414,7 @@ spec:
 ```
 
 [functions]: https://docs.crossplane.io/latest/composition/compositions/
+[tags]: https://github.com/Exxeon/function-aws-lookup/tags
 [tagging-api]: https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/API_GetResources.html
 [cloud-control]: https://docs.aws.amazon.com/cloudcontrolapi/latest/APIReference/API_GetResource.html
 [service-reference]: https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html
