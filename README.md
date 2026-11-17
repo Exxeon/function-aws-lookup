@@ -415,7 +415,10 @@ publishing it.
   the branch or tag, and supply `version`. Leave it empty for a development
   version on a branch, or to use the selected tag's version. Explicit
   versions are recorded as Git tags too, so automatic bumps account for
-  manual stable releases. Make stable releases from the history of `main`.
+  manual stable releases.
+- Manual runs and tag pushes only publish commits that are already on `main`
+  or a `release-*` branch. Any other commit fails before publishing, so a
+  package always contains reviewed code.
 
 Release versions must use `vMAJOR.MINOR.PATCH`, optionally followed by a
 prerelease suffix such as `-rc.1`. Build metadata (`+...`) is not supported
