@@ -141,9 +141,10 @@ For every desired composed resource whose external name starts with
    field of the resource as read with the [Cloud Control API][cloud-control].
 4. If several resources match, it stops the pipeline with a fatal result that
    lists them. Refine the tags so that only one matches.
-5. If nothing matches, it stops the pipeline (`onNotFound: Fail`, the default)
-   or removes the annotation so that the provider creates a new resource
-   (`onNotFound: Create`).
+5. If nothing matches, it stops the pipeline (`Fail`, the default) or removes
+   the annotation so that the provider creates a new resource (`Create`). Set
+   this for the whole step with `onNotFound` in the input, or for one resource
+   with an annotation; see [What happens when nothing matches](#what-happens-when-nothing-matches).
 
 The function stops the pipeline whenever it can't resolve a URI. Otherwise
 Crossplane would pass the URI to the provider as if it were a resource name.
@@ -255,12 +256,48 @@ input:
   credentialsName: aws-creds
   # IAM role to assume before the lookup, for example in another account.
   assumeRoleARN: arn:aws:iam::123456789012:role/crossplane-lookup
-  # Fail (default) or Create.
+  # Fail (default) or Create. A resource's
+  # awslookup.fn.exxeon.io/on-not-found annotation overrides it.
   onNotFound: Fail
 ```
 
 The region comes from the resource's `spec.forProvider.region`, or from the
 input's `region` when the resource has none.
+
+## What happens when nothing matches
+
+`onNotFound` in the input sets what happens for every resource in the step:
+
+- `Fail` (default): the pipeline stops, and nothing in the composition is
+  created or updated until a matching resource exists.
+- `Create`: the function removes the URI from the external name, so the
+  provider creates a new resource.
+
+To set it for one resource, add the `awslookup.fn.exxeon.io/on-not-found`
+annotation, with the same values. The annotation wins over the input:
+
+```yaml
+apiVersion: cloudwatchlogs.aws.m.upbound.io/v1beta1
+kind: Group
+metadata:
+  annotations:
+    crossplane.io/external-name: aws-lookup://logs/log-group?team=payments
+    # Adopt the team's log group if it has one, otherwise create it.
+    awslookup.fn.exxeon.io/on-not-found: Create
+```
+
+- The annotation only changes what happens when nothing matches. If several
+  resources match, or the lookup fails, the pipeline always stops.
+- An invalid value stops the pipeline, also for resources that are already
+  adopted, so a typo shows up straight away.
+- The annotation stays on the managed resource. The provider ignores it.
+
+Because it is an annotation, the composite resource can decide. For example,
+with function-go-templating:
+
+```yaml
+awslookup.fn.exxeon.io/on-not-found: {{ if .observed.composite.resource.spec.adoptOnly }}Fail{{ else }}Create{{ end }}
+```
 
 ## Credentials
 

@@ -66,6 +66,19 @@ func bucket(annotation string) *fnv1.Resource {
 	}`)}
 }
 
+// bucketWithPolicy is a bucket with an on-not-found annotation.
+func bucketWithPolicy(externalName, policy string) *fnv1.Resource {
+	return &fnv1.Resource{Resource: resource.MustStructJSON(`{
+		"apiVersion": "s3.aws.m.upbound.io/v1beta1",
+		"kind": "Bucket",
+		"metadata": {"annotations": {
+			"crossplane.io/external-name": "` + externalName + `",
+			"awslookup.fn.exxeon.io/on-not-found": "` + policy + `"
+		}},
+		"spec": {"forProvider": {"region": "eu-west-1"}}
+	}`)}
+}
+
 func annotation(rsp *fnv1.RunFunctionResponse, name string) (string, bool) {
 	r := rsp.GetDesired().GetResources()[name]
 	Expect(r).NotTo(BeNil())
@@ -266,6 +279,75 @@ var _ = Describe("RunFunction", func() {
 		Expect(fatal(rsp)).To(BeEmpty())
 		_, ok := annotation(rsp, "bucket")
 		Expect(ok).To(BeFalse())
+	})
+
+	Describe("the on-not-found annotation", func() {
+		const createInput = `{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Create"}`
+
+		It("creates the resource when it says Create and the input says Fail", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Create")
+
+			rsp := run()
+
+			Expect(fatal(rsp)).To(BeEmpty())
+			_, ok := annotation(rsp, "bucket")
+			Expect(ok).To(BeFalse())
+		})
+
+		It("fails when it says Fail and the input says Create", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Fail")
+			req.Input = resource.MustStructJSON(createInput)
+
+			Expect(fatal(run())).To(ContainSubstring(`composed resource "bucket": no AWS resource in eu-west-1 matches`))
+		})
+
+		It("applies to its own resource only", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Create")
+			req.Desired.Resources["other"] = bucket("aws-lookup://sqs?team=payments")
+
+			Expect(fatal(run())).To(ContainSubstring(`composed resource "other": no AWS resource in eu-west-1 matches`))
+		})
+
+		It("stays on the resource", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Create")
+
+			r := run().GetDesired().GetResources()["bucket"]
+			v := r.GetResource().GetFields()["metadata"].GetStructValue().GetFields()["annotations"].GetStructValue().GetFields()[AnnotationOnNotFound]
+			Expect(v.GetStringValue()).To(Equal("Create"))
+		})
+
+		It("doesn't change what happens when several resources match", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Create")
+			finder.arns = []string{"arn:aws:s3:::a", "arn:aws:s3:::b"}
+
+			Expect(fatal(run())).To(ContainSubstring("2 AWS resources in eu-west-1 match"))
+		})
+
+		It("is ignored on resources without a lookup URI", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy("my-bucket", "Nope")
+
+			Expect(fatal(run())).To(BeEmpty())
+		})
+
+		It("fails on an invalid value", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "create")
+
+			Expect(fatal(run())).To(ContainSubstring(`composed resource "bucket": invalid awslookup.fn.exxeon.io/on-not-found annotation "create", must be one of Fail, Create`))
+		})
+
+		It("fails on an invalid value also when the observed external name is kept", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Maybe")
+			req.Observed = &fnv1.State{Resources: map[string]*fnv1.Resource{"bucket": bucket("legacy-bucket")}}
+
+			Expect(fatal(run())).To(ContainSubstring(`invalid awslookup.fn.exxeon.io/on-not-found annotation "Maybe"`))
+			Expect(opts).To(BeEmpty())
+		})
+	})
+
+	It("fails on an invalid onNotFound in the input", func() {
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+
+		Expect(fatal(run())).To(ContainSubstring(`invalid onNotFound "Skip" in the Function input, must be one of Fail, Create`))
 	})
 
 	It("fails when the AWS lookup fails", func() {

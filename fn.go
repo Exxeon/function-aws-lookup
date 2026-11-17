@@ -19,8 +19,14 @@ import (
 	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 )
 
-// AnnotationExternalName is the Crossplane external name annotation.
-const AnnotationExternalName = "crossplane.io/external-name"
+const (
+	// AnnotationExternalName is the Crossplane external name annotation.
+	AnnotationExternalName = "crossplane.io/external-name"
+
+	// AnnotationOnNotFound sets the not-found policy of one composed
+	// resource. It overrides onNotFound in the Function input.
+	AnnotationOnNotFound = "awslookup.fn.exxeon.io/on-not-found"
+)
 
 const (
 	defaultCredentialsName = "aws-creds"
@@ -43,18 +49,10 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 	log := f.log.WithValues("tag", req.GetMeta().GetTag())
 	rsp := response.To(req, response.DefaultTTL)
 
-	in := &v1beta1.Input{}
-	if req.GetInput() != nil {
-		if err := request.GetInput(req, in); err != nil {
-			response.Fatal(rsp, errors.Wrapf(err, "cannot get Function input from %T", req))
-			return rsp, nil
-		}
-	}
-	if in.CredentialsName == "" {
-		in.CredentialsName = defaultCredentialsName
-	}
-	if in.OnNotFound == "" {
-		in.OnNotFound = v1beta1.NotFoundPolicyFail
+	in, err := getInput(req)
+	if err != nil {
+		response.Fatal(rsp, err)
+		return rsp, nil
 	}
 
 	desired, err := request.GetDesiredComposedResources(req)
@@ -77,6 +75,14 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			continue
 		}
 		log := log.WithValues("resource", name, "uri", uri)
+
+		// Check the policy before anything else, so that a typo in the
+		// annotation shows up also for resources that are already adopted.
+		onNotFound, err := notFoundPolicy(dr, in)
+		if err != nil {
+			response.Fatal(rsp, errors.Wrapf(err, "composed resource %q", name))
+			return rsp, nil
+		}
 
 		// Once the resource exists, keep the external name it already has.
 		// This also means AWS is only called when a resource is first adopted.
@@ -115,7 +121,7 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			response.Normalf(rsp, "Composed resource %q adopts existing AWS resource %q", name, ext)
 			setExternalName(dr, ext)
 		case 0:
-			if in.OnNotFound == v1beta1.NotFoundPolicyCreate {
+			if onNotFound == v1beta1.NotFoundPolicyCreate {
 				log.Info("No AWS resource matches, creating a new one", "region", region)
 				response.Normalf(rsp, "No AWS resource in %s matches %s, composed resource %q creates a new one", region, uri, name)
 				removeExternalName(dr)
@@ -277,6 +283,48 @@ func observedExternalName(observed map[resource.Name]resource.ObservedComposed, 
 		return ""
 	}
 	return ext
+}
+
+// getInput returns the Function input with defaults applied.
+func getInput(req *fnv1.RunFunctionRequest) (*v1beta1.Input, error) {
+	in := &v1beta1.Input{}
+	if req.GetInput() != nil {
+		if err := request.GetInput(req, in); err != nil {
+			return nil, errors.Wrapf(err, "cannot get Function input from %T", req)
+		}
+	}
+	if in.CredentialsName == "" {
+		in.CredentialsName = defaultCredentialsName
+	}
+	if in.OnNotFound == "" {
+		in.OnNotFound = v1beta1.NotFoundPolicyFail
+	}
+	if !validPolicy(in.OnNotFound) {
+		return nil, errors.Errorf("invalid onNotFound %q in the Function input, must be one of %s", in.OnNotFound, policies())
+	}
+	return in, nil
+}
+
+// notFoundPolicy returns the not-found policy of a composed resource: its
+// annotation if it has one, otherwise the Function input.
+func notFoundPolicy(dr *resource.DesiredComposed, in *v1beta1.Input) (v1beta1.NotFoundPolicy, error) {
+	v, ok := dr.Resource.GetAnnotations()[AnnotationOnNotFound]
+	if !ok {
+		return in.OnNotFound, nil
+	}
+	p := v1beta1.NotFoundPolicy(v)
+	if !validPolicy(p) {
+		return "", errors.Errorf("invalid %s annotation %q, must be one of %s", AnnotationOnNotFound, v, policies())
+	}
+	return p, nil
+}
+
+func validPolicy(p v1beta1.NotFoundPolicy) bool {
+	return p == v1beta1.NotFoundPolicyFail || p == v1beta1.NotFoundPolicyCreate
+}
+
+func policies() string {
+	return string(v1beta1.NotFoundPolicyFail) + ", " + string(v1beta1.NotFoundPolicyCreate)
 }
 
 func regionOf(dr *resource.DesiredComposed, in *v1beta1.Input) string {
