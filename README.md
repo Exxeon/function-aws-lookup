@@ -42,7 +42,7 @@ kind: Function
 metadata:
   name: function-aws-lookup
 spec:
-  package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+  package: ghcr.io/exxeon/function-aws-lookup:v0.2.0
 ```
 
 ```shell
@@ -91,7 +91,7 @@ The function then needs AWS credentials. Give it either:
   metadata:
     name: function-aws-lookup
   spec:
-    package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
+    package: ghcr.io/exxeon/function-aws-lookup:v0.2.0
     runtimeConfigRef:
       name: function-aws-lookup
   ```
@@ -122,7 +122,7 @@ composition. If a lookup fails, the composite resource's `Synced` condition
 shows why:
 
 ```shell
-kubectl get <kind> <name> -o jsonpath='{.status.conditions[?(@.type=="Synced")].message}'
+kubectl get <kind> <name> -n <namespace> -o jsonpath='{.status.conditions[?(@.type=="Synced")].message}'
 ```
 
 ## How it works
@@ -216,8 +216,7 @@ With a field, the function reads the matching resource with Cloud Control
 `GetResource` and uses the value of that field.
 
 - Fields are CloudFormation property names, as listed in the
-  [CloudFormation resource reference][service-reference]: https://docs.aws.amazon.com/service-authorization/latest/reference/service-reference.html
-[cfn-reference]: `DbiResourceId`, not
+  [CloudFormation resource reference][cfn-reference]: `DbiResourceId`, not
   `resource_id` or `resourceId`.
 - Separate nested fields with `/`, and use a number for a list item:
   `Endpoint/Address`, `Tags/0/Value`. Escape a `/` in a property name as `~1`
@@ -346,7 +345,11 @@ resource is deleted. When you adopt resources from another tool:
 
 - start with `managementPolicies: ["Observe"]` and compare the observed state
   with your composition before you allow changes;
-- set `deletionPolicy: Orphan` until you are sure the composition is right;
+- leave `Delete` out of `managementPolicies`, for example
+  `["Observe", "Create", "Update", "LateInitialize"]`, until you are sure the
+  composition is right, so that deleting the managed resource leaves the AWS
+  resource in place. Namespaced managed resources in Crossplane v2 have no
+  `deletionPolicy`;
 - remove the resource from the old tool's state (`terraform state rm`, or a
   CloudFormation `DeletionPolicy: Retain` followed by removing it from the
   stack) so that two tools don't manage it.
@@ -360,7 +363,8 @@ go test ./...
 # Lint
 golangci-lint run
 
-# Regenerate the input CRD and deepcopy code after changing input/v1beta1
+# Regenerate the input CRD, the deepcopy code and the CloudFormation type
+# table. The table generator downloads AWS's schemas, so this needs internet.
 go generate ./...
 
 # Build the runtime image and the Crossplane package
@@ -399,12 +403,12 @@ publishing it.
 - Pushes to `main` with no release-worthy commits, or to a `release-*`
   branch, publish a development version:
   `v0.0.0-<UTC-commit-timestamp>-<12-character-commit-SHA>`.
-- Pushing a version tag such as `v0.1.0` or `v0.1.0-rc.1` publishes that
+- Pushing a version tag such as `v0.3.0` or `v0.3.0-rc.1` publishes that
   version. Tag the merged commit you want to release:
 
   ```shell
-  git tag v0.1.0 <commit>
-  git push origin v0.1.0
+  git tag v0.3.0 <commit>
+  git push origin v0.3.0
   ```
 
 - To publish manually, run the **CI** workflow in GitHub Actions, select
@@ -435,20 +439,12 @@ when git-cliff's version preview prints the previous stable version.
 
 Publishing uses the repository's `GITHUB_TOKEN` with `packages: write` and
 `contents: write` for release tags; no separate registry secret is needed.
-The token's tag push does not start another workflow. For public installation,
-set the GHCR package's visibility to **Public** in its GitHub package settings
-after its first publication.
+The token's tag push does not start another workflow. The package is public.
+A new GHCR package starts out private; making it public needs the Exxeon
+organisation to allow public packages (organisation settings, **Packages**)
+and then the package's visibility set to **Public** in its package settings.
 
-Install a published version with:
-
-```yaml
-apiVersion: pkg.crossplane.io/v1
-kind: Function
-metadata:
-  name: function-aws-lookup
-spec:
-  package: ghcr.io/exxeon/function-aws-lookup:v0.1.0
-```
+To install a published version, see [Installation](#installation).
 
 [functions]: https://docs.crossplane.io/latest/composition/compositions/
 [tags]: https://github.com/Exxeon/function-aws-lookup/tags
