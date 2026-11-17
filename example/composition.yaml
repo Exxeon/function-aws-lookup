@@ -25,6 +25,8 @@ spec:
             annotations:
               gotemplating.fn.crossplane.io/composition-resource-name: bucket
               crossplane.io/external-name: aws-lookup://s3?team={{ .observed.composite.resource.spec.team }}&environment={{ .observed.composite.resource.spec.environment }}
+              # Overrides onNotFound in the input for this resource only.
+              awslookup.fn.exxeon.io/on-not-found: Fail
           spec:
             forProvider:
               region: eu-west-1

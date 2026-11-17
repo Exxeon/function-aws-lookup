@@ -53,7 +53,8 @@ spec:
             description: |-
               OnNotFound decides what happens when no AWS resource matches a lookup.
               Fail stops the pipeline. Create removes the annotation so that the
-              provider creates a new resource. Defaults to Fail.
+              provider creates a new resource. Defaults to Fail. A composed resource
+              can override it with the awslookup.fn.exxeon.io/on-not-found annotation.
             enum:
             - Fail
             - Create

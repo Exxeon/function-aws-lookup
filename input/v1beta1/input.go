@@ -50,7 +50,8 @@ type Input struct {
 
 	// OnNotFound decides what happens when no AWS resource matches a lookup.
 	// Fail stops the pipeline. Create removes the annotation so that the
-	// provider creates a new resource. Defaults to Fail.
+	// provider creates a new resource. Defaults to Fail. A composed resource
+	// can override it with the awslookup.fn.exxeon.io/on-not-found annotation.
 	// +kubebuilder:validation:Enum=Fail;Create
 	// +optional
 	OnNotFound NotFoundPolicy `json:"onNotFound,omitempty"`
