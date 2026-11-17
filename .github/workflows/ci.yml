@@ -59,6 +59,33 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
 
+  # Every commit in a pull request needs a Developer Certificate of Origin
+  # sign-off from its author. See CONTRIBUTING.md.
+  dco:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-26.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check Sign-offs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          missing=0
+          for commit in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            email=$(git log -1 --format='%ae' "$commit")
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$commit" | grep -qiF "<$email>"; then
+              echo "::error::Commit $(git log -1 --format='%h %s' "$commit") has no 'Signed-off-by:' trailer for $email. Sign off with 'git commit -s'; see CONTRIBUTING.md."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
   unit-test:
     runs-on: ubuntu-26.04
     steps:
@@ -161,6 +188,22 @@ jobs:
           REQUESTED_VERSION: ${{ inputs.version }}
         shell: bash
         run: |
+          # Manual runs and tag pushes can name any commit. Only publish ones
+          # that went through review: on main, or on a release-* branch.
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch || "$GITHUB_REF_TYPE" == tag ]]; then
+            reviewed=false
+            for branch in $(git for-each-ref --format='%(refname)' refs/remotes/origin/main 'refs/remotes/origin/release-*'); do
+              if git merge-base --is-ancestor "$GITHUB_SHA" "$branch"; then
+                reviewed=true
+                break
+              fi
+            done
+            if [[ "$reviewed" != true ]]; then
+              echo "::error::Only commits on main or a release-* branch can be published. Merge the change first."
+              exit 1
+            fi
+          fi
+
           version="$REQUESTED_VERSION"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             if [[ -n "$version" && "$version" != "$GITHUB_REF_NAME" ]]; then

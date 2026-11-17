@@ -8,3 +8,4 @@
 
 - [ ] I added or updated unit tests.
 - [ ] I updated `README.md` if the URI format, input, supported types or permissions changed.
+- [ ] I signed off all commits (`git commit -s`), see [CONTRIBUTING.md](../CONTRIBUTING.md).

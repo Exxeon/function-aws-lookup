@@ -84,11 +84,15 @@ crossplane render xr.yaml composition.yaml functions.yaml --function-credentials
   - a maintainer from `.github/CODEOWNERS` other than the last pusher must approve, and new pushes
     dismiss earlier approvals;
   - `lint`, `unit-test`, `build (amd64)` and `build (arm64)` must pass on a branch that is up to
-    date with `main`;
+    date with `main`, and `dco` must pass on pull requests;
   - all review threads must be resolved;
   - pull requests are squash-merged, with the pull request title as the commit message, so the
     title must follow Conventional Commits.
 - Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`).
+- Sign off every commit with `git commit -s` (Developer Certificate of Origin, see `DCO` and
+  `CONTRIBUTING.md`). The `dco` job fails a pull request with a commit that has no
+  `Signed-off-by` trailer for its author's email.
+- Maintainers are listed in `OWNERS.md` and `.github/CODEOWNERS`. Keep both in sync.
 - `.github/workflows/ci.yml` lints, tests and builds the package for amd64 and arm64 on every pull
   request. On pushes to `main` it also pushes the package to `ghcr.io/exxeon/function-aws-lookup`
   (lowercase; registry names can't contain capitals), after lint, tests and both builds pass.
@@ -98,6 +102,8 @@ crossplane render xr.yaml composition.yaml functions.yaml --function-credentials
   release tags are recorded before pushing the package, and reruns reuse a tag on the same commit.
   Pushing a `v*` version tag or a `workflow_dispatch` run with a `version` input publishes a
   release version. Release versions use `vMAJOR.MINOR.PATCH` with an optional prerelease suffix.
+  Manual runs and tag pushes only publish commits that are already on `main` or a `release-*`
+  branch, so that nothing unreviewed is published.
 
 ## Writing
 
