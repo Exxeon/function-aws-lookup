@@ -141,10 +141,11 @@ For every desired composed resource whose external name starts with
    field of the resource as read with the [Cloud Control API][cloud-control].
 4. If several resources match, it stops the pipeline with a fatal result that
    lists them. Refine the tags so that only one matches.
-5. If nothing matches, it stops the pipeline (`Fail`, the default) or removes
-   the annotation so that the provider creates a new resource (`Create`). Set
-   this for the whole step with `onNotFound` in the input, or for one resource
-   with an annotation; see [What happens when nothing matches](#what-happens-when-nothing-matches).
+5. If nothing matches, it stops the pipeline (`Fail`, the default), removes
+   the annotation so that the provider creates a new resource (`Create`), or
+   leaves the resource out of the desired state (`Skip`). Set this for the
+   whole step with `onNotFound` in the input, or for one resource with an
+   annotation; see [What happens when nothing matches](#what-happens-when-nothing-matches).
 
 The function stops the pipeline whenever it can't resolve a URI. Otherwise
 Crossplane would pass the URI to the provider as if it were a resource name.
@@ -255,7 +256,7 @@ input:
   credentialsName: aws-creds
   # IAM role to assume before the lookup, for example in another account.
   assumeRoleARN: arn:aws:iam::123456789012:role/crossplane-lookup
-  # Fail (default) or Create. A resource's
+  # Fail (default), Create or Skip. A resource's
   # awslookup.fn.exxeon.io/on-not-found annotation overrides it.
   onNotFound: Fail
 ```
@@ -271,6 +272,9 @@ input's `region` when the resource has none.
   created or updated until a matching resource exists.
 - `Create`: the function removes the URI from the external name, so the
   provider creates a new resource.
+- `Skip`: the function removes the resource from the desired state, and the
+  pipeline continues with the remaining resources. Use this for optional
+  resources that should be adopted if they exist and left out otherwise.
 
 To set it for one resource, add the `awslookup.fn.exxeon.io/on-not-found`
 annotation, with the same values. The annotation wins over the input:
@@ -281,8 +285,8 @@ kind: Group
 metadata:
   annotations:
     crossplane.io/external-name: aws-lookup://logs/log-group?team=payments
-    # Adopt the team's log group if it has one, otherwise create it.
-    awslookup.fn.exxeon.io/on-not-found: Create
+    # Adopt the team's log group if it has one, otherwise leave it out.
+    awslookup.fn.exxeon.io/on-not-found: Skip
 ```
 
 - The annotation only changes what happens when nothing matches. If several
@@ -290,6 +294,17 @@ metadata:
 - An invalid value stops the pipeline, also for resources that are already
   adopted, so a typo shows up straight away.
 - The annotation stays on the managed resource. The provider ignores it.
+- With `Skip`:
+  - An already observed managed resource is never omitted. If it has no
+    resolved external name and nothing matches, the pipeline stops to prevent
+    deletion.
+  - Later steps in the pipeline won't see a skipped resource. Put this function
+    last, or after any step that reads optional resources from the desired
+    state.
+  - Other composed resources must not depend on a resource that may be skipped,
+    or their references won't resolve.
+  - If a matching AWS resource is tagged later, the next reconcile finds it and
+    creates the composed resource to adopt it.
 
 Because it is an annotation, the composite resource can decide. For example,
 with function-go-templating:

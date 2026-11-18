@@ -121,25 +121,19 @@ func (f *Function) RunFunction(ctx context.Context, req *fnv1.RunFunctionRequest
 			response.Normalf(rsp, "Composed resource %q adopts existing AWS resource %q", name, ext)
 			setExternalName(dr, ext)
 		case 0:
-			if onNotFound == v1beta1.NotFoundPolicyCreate {
-				log.Info("No AWS resource matches, creating a new one", "region", region)
-				response.Normalf(rsp, "No AWS resource in %s matches %s, composed resource %q creates a new one", region, uri, name)
-				removeExternalName(dr)
-				continue
+			if err := handleNotFound(log, rsp, desired, observed, name, region, onNotFound); err != nil {
+				response.Fatal(rsp, err)
+				return rsp, nil
 			}
-			response.Fatal(rsp, errors.Errorf("composed resource %q: no AWS resource in %s matches %s", name, region, uri))
-			return rsp, nil
 		default:
-			listed := make([]string, 0, maxListedMatches)
-			for _, m := range matches[:min(len(matches), maxListedMatches)] {
-				listed = append(listed, m.ARN)
-			}
-			response.Fatal(rsp, errors.Errorf("composed resource %q: %d AWS resources in %s match %s, refine the tags so that exactly one matches: %s",
-				name, len(matches), region, uri, strings.Join(listed, ", ")))
+			response.Fatal(rsp, tooManyMatchesError(name, region, uri, matches))
 			return rsp, nil
 		}
 	}
 
+	if rsp.GetDesired() != nil {
+		rsp.Desired.Resources = nil
+	}
 	if err := response.SetDesiredComposedResources(rsp, desired); err != nil {
 		response.Fatal(rsp, errors.Wrap(err, "cannot set desired composed resources"))
 		return rsp, nil
@@ -273,6 +267,45 @@ func (r *resolver) getFinder(ctx context.Context, region string) (awsclient.Find
 	return f, nil
 }
 
+func handleNotFound(
+	log logging.Logger,
+	rsp *fnv1.RunFunctionResponse,
+	desired map[resource.Name]*resource.DesiredComposed,
+	observed map[resource.Name]resource.ObservedComposed,
+	name resource.Name,
+	region string,
+	policy v1beta1.NotFoundPolicy,
+) error {
+	dr := desired[name]
+	uri := dr.Resource.GetAnnotations()[AnnotationExternalName]
+
+	switch policy {
+	case v1beta1.NotFoundPolicyCreate:
+		log.Info("No AWS resource matches, creating a new one", "region", region)
+		response.Normalf(rsp, "No AWS resource in %s matches %s, composed resource %q creates a new one", region, uri, name)
+		removeExternalName(dr)
+	case v1beta1.NotFoundPolicySkip:
+		if _, ok := observed[name]; ok {
+			return errors.Errorf("composed resource %q: already exists without an external name and no AWS resource in %s matches %s", name, region, uri)
+		}
+		log.Info("No AWS resource matches, skipping", "region", region)
+		response.Normalf(rsp, "No AWS resource in %s matches %s, composed resource %q skips (NotFoundPolicySkip)", region, uri, name)
+		delete(desired, name)
+	case v1beta1.NotFoundPolicyFail:
+		return errors.Errorf("composed resource %q: no AWS resource in %s matches %s", name, region, uri)
+	}
+	return nil
+}
+
+func tooManyMatchesError(name resource.Name, region, uri string, matches []lookup.Resource) error {
+	listed := make([]string, 0, maxListedMatches)
+	for _, m := range matches[:min(len(matches), maxListedMatches)] {
+		listed = append(listed, m.ARN)
+	}
+	return errors.Errorf("composed resource %q: %d AWS resources in %s match %s, refine the tags so that exactly one matches: %s",
+		name, len(matches), region, uri, strings.Join(listed, ", "))
+}
+
 func observedExternalName(observed map[resource.Name]resource.ObservedComposed, name resource.Name) string {
 	oc, ok := observed[name]
 	if !ok || oc.Resource == nil {
@@ -319,12 +352,20 @@ func notFoundPolicy(dr *resource.DesiredComposed, in *v1beta1.Input) (v1beta1.No
 	return p, nil
 }
 
+func supportedPolicies() []string {
+	return []string{
+		string(v1beta1.NotFoundPolicyFail),
+		string(v1beta1.NotFoundPolicyCreate),
+		string(v1beta1.NotFoundPolicySkip),
+	}
+}
+
 func validPolicy(p v1beta1.NotFoundPolicy) bool {
-	return p == v1beta1.NotFoundPolicyFail || p == v1beta1.NotFoundPolicyCreate
+	return slices.Contains(supportedPolicies(), string(p))
 }
 
 func policies() string {
-	return string(v1beta1.NotFoundPolicyFail) + ", " + string(v1beta1.NotFoundPolicyCreate)
+	return strings.Join(supportedPolicies(), ", ")
 }
 
 func regionOf(dr *resource.DesiredComposed, in *v1beta1.Input) string {
