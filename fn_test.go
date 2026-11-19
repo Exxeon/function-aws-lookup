@@ -324,6 +324,17 @@ var _ = Describe("RunFunction", func() {
 		Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
 	})
 
+	It("adopts the single matching resource when onNotFound is Skip", func() {
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket"))
+		Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
+	})
+
 	It("keeps an already-adopted observed resource when onNotFound is Skip", func() {
 		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
 		req.Observed = &fnv1.State{Resources: map[string]*fnv1.Resource{"bucket": bucket("legacy-bucket")}}
