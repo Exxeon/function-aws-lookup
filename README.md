@@ -42,7 +42,7 @@ kind: Function
 metadata:
   name: function-aws-lookup
 spec:
-  package: ghcr.io/exxeon/function-aws-lookup:v0.2.0
+  package: ghcr.io/exxeon/function-aws-lookup:v0.3.0
 ```
 
 ```shell
@@ -91,7 +91,7 @@ The function then needs AWS credentials. Give it either:
   metadata:
     name: function-aws-lookup
   spec:
-    package: ghcr.io/exxeon/function-aws-lookup:v0.2.0
+    package: ghcr.io/exxeon/function-aws-lookup:v0.3.0
     runtimeConfigRef:
       name: function-aws-lookup
   ```
