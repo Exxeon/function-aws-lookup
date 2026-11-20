@@ -9,6 +9,7 @@ import (
 	fnv1 "github.com/crossplane/function-sdk-go/proto/v1"
 	"github.com/crossplane/function-sdk-go/resource"
 
+	"github.com/Exxeon/function-aws-lookup/input/v1beta1"
 	"github.com/Exxeon/function-aws-lookup/internal/awsclient"
 	"github.com/Exxeon/function-aws-lookup/internal/lookup"
 
@@ -100,6 +101,25 @@ func fatal(rsp *fnv1.RunFunctionResponse) string {
 	return ""
 }
 
+var _ = Describe("not-found policies", func() {
+	DescribeTable("validates supported policy names",
+		func(policy string, valid bool) {
+			Expect(validPolicy(v1beta1.NotFoundPolicy(policy))).To(Equal(valid))
+		},
+		Entry("Fail", "Fail", true),
+		Entry("Create", "Create", true),
+		Entry("Skip", "Skip", true),
+		Entry("empty value", "", false),
+		Entry("unknown value", "Nope", false),
+		Entry("wrong case", "skip", false),
+		Entry("surrounding whitespace", " Skip ", false),
+	)
+
+	It("lists the supported policies for error messages", func() {
+		Expect(policies()).To(Equal("Fail, Create, Skip"))
+	})
+})
+
 var _ = Describe("RunFunction", func() {
 	var (
 		finder *fakeFinder
@@ -130,6 +150,17 @@ var _ = Describe("RunFunction", func() {
 		Expect(err).NotTo(HaveOccurred())
 		return rsp
 	}
+
+	It("handles a request without desired state without calling AWS", func() {
+		req.Desired = nil
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(rsp.GetDesired().GetResources()).To(BeEmpty())
+		Expect(opts).To(BeEmpty())
+		Expect(finder.calls).To(BeEmpty())
+	})
 
 	It("injects the external name of the single matching resource", func() {
 		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
@@ -281,6 +312,56 @@ var _ = Describe("RunFunction", func() {
 		Expect(ok).To(BeFalse())
 	})
 
+	It("omits the unmatched resource and keeps other resources when onNotFound is Skip", func() {
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+		req.Desired.Resources["other"] = bucket("other-bucket")
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(rsp.GetDesired().GetResources()).NotTo(HaveKey("bucket"))
+		Expect(externalName(rsp, "other")).To(Equal("other-bucket"))
+		Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
+	})
+
+	It("adopts the single matching resource when onNotFound is Skip", func() {
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+		finder.arns = []string{"arn:aws:s3:::legacy-bucket"}
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket"))
+		Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
+	})
+
+	It("keeps an already-adopted observed resource when onNotFound is Skip", func() {
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+		req.Observed = &fnv1.State{Resources: map[string]*fnv1.Resource{"bucket": bucket("legacy-bucket")}}
+
+		rsp := run()
+
+		Expect(fatal(rsp)).To(BeEmpty())
+		Expect(externalName(rsp, "bucket")).To(Equal("legacy-bucket"))
+		Expect(opts).To(BeEmpty())
+		Expect(finder.calls).To(BeEmpty())
+	})
+
+	DescribeTable("does not drop an observed resource with an unresolved external name when onNotFound is Skip",
+		func(observedName string) {
+			req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+			req.Observed = &fnv1.State{Resources: map[string]*fnv1.Resource{"bucket": bucket(observedName)}}
+
+			rsp := run()
+
+			Expect(fatal(rsp)).To(ContainSubstring(`composed resource "bucket": already exists without an external name and no AWS resource in eu-west-1 matches`))
+			Expect(rsp.GetDesired().GetResources()).To(HaveKey("bucket"))
+			Expect(finder.calls).To(Equal([]findCall{{region: "eu-west-1", query: bucketURI}}))
+		},
+		Entry("empty external name", ""),
+		Entry("lookup URI", bucketURI),
+	)
+
 	Describe("the on-not-found annotation", func() {
 		const createInput = `{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Create"}`
 
@@ -292,6 +373,17 @@ var _ = Describe("RunFunction", func() {
 			Expect(fatal(rsp)).To(BeEmpty())
 			_, ok := annotation(rsp, "bucket")
 			Expect(ok).To(BeFalse())
+		})
+
+		It("skips the resource when it says Skip and the input says Fail", func() {
+			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "Skip")
+			req.Desired.Resources["other"] = bucket("other-bucket")
+
+			rsp := run()
+
+			Expect(fatal(rsp)).To(BeEmpty())
+			Expect(rsp.GetDesired().GetResources()).NotTo(HaveKey("bucket"))
+			Expect(externalName(rsp, "other")).To(Equal("other-bucket"))
 		})
 
 		It("fails when it says Fail and the input says Create", func() {
@@ -332,7 +424,7 @@ var _ = Describe("RunFunction", func() {
 		It("fails on an invalid value", func() {
 			req.Desired.Resources["bucket"] = bucketWithPolicy(bucketURI, "create")
 
-			Expect(fatal(run())).To(ContainSubstring(`composed resource "bucket": invalid awslookup.fn.exxeon.io/on-not-found annotation "create", must be one of Fail, Create`))
+			Expect(fatal(run())).To(ContainSubstring(`composed resource "bucket": invalid awslookup.fn.exxeon.io/on-not-found annotation "create", must be one of Fail, Create, Skip`))
 		})
 
 		It("fails on an invalid value also when the observed external name is kept", func() {
@@ -345,9 +437,9 @@ var _ = Describe("RunFunction", func() {
 	})
 
 	It("fails on an invalid onNotFound in the input", func() {
-		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Skip"}`)
+		req.Input = resource.MustStructJSON(`{"apiVersion": "awslookup.fn.exxeon.io/v1beta1", "kind": "Input", "onNotFound": "Nope"}`)
 
-		Expect(fatal(run())).To(ContainSubstring(`invalid onNotFound "Skip" in the Function input, must be one of Fail, Create`))
+		Expect(fatal(run())).To(ContainSubstring(`invalid onNotFound "Nope" in the Function input, must be one of Fail, Create, Skip`))
 	})
 
 	It("fails when the AWS lookup fails", func() {

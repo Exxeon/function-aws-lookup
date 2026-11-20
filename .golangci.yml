@@ -18,6 +18,8 @@ linters:
     - paralleltest
     - nilnil
     - funcorder
+    # Replaced by gomodguard_v2, enabled by default: all.
+    - gomodguard
 
     # Below are linters that lint for things we don't value. Each entry below
     # this line must have a comment explaining the rationale.

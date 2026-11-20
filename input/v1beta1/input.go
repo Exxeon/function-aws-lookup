@@ -22,6 +22,10 @@ const (
 	// NotFoundPolicyCreate removes the external name annotation so that the
 	// provider creates a new resource.
 	NotFoundPolicyCreate NotFoundPolicy = "Create"
+
+	// NotFoundPolicySkip omits an unmatched resource from the desired state.
+	// It fails if the managed resource is already observed, to prevent deletion.
+	NotFoundPolicySkip NotFoundPolicy = "Skip"
 )
 
 // Input configures the AWS lookup Function.
@@ -50,9 +54,10 @@ type Input struct {
 
 	// OnNotFound decides what happens when no AWS resource matches a lookup.
 	// Fail stops the pipeline. Create removes the annotation so that the
-	// provider creates a new resource. Defaults to Fail. A composed resource
-	// can override it with the awslookup.fn.exxeon.io/on-not-found annotation.
-	// +kubebuilder:validation:Enum=Fail;Create
+	// provider creates a new resource. Skip leaves the resource out of the
+	// desired state. Defaults to Fail. A composed resource can override it
+	// with the awslookup.fn.exxeon.io/on-not-found annotation.
+	// +kubebuilder:validation:Enum=Fail;Create;Skip
 	// +optional
 	OnNotFound NotFoundPolicy `json:"onNotFound,omitempty"`
 }
